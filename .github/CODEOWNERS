@@ -1,0 +1,5 @@
+﻿# This file assigns code ownership to enforce reviews before merging.
+# Syntax: <path> <github-username>
+
+*       @OrSasson1407
+/infra/ @OrSasson1407
