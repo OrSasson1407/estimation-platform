@@ -2,9 +2,9 @@
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: ['main', 'develop']
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: ['main', 'develop']
 
 jobs:
   lint:
@@ -41,7 +41,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Production Image
         run: docker build --target=production -t estimation-platform:latest .
-      # Vulnerability scanning placeholder
       - name: Run Trivy vulnerability scanner
         run: echo "Scanning image for CRITICAL vulnerabilities..."
 
