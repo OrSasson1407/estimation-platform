@@ -1,0 +1,57 @@
+﻿generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Developer {
+  id                String             @id @default(cuid())
+  externalId        String             @unique
+  name              String
+  email             String             @unique
+  estimationAcc     Float              @default(0)
+  avgTaskDuration   Float              @default(0)
+  cognitiveLoad     Float              @default(0)
+  burnoutRisk       BurnoutLevel       @default(LOW)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([estimationAcc])
+  @@index([cognitiveLoad])
+}
+
+enum BurnoutLevel { LOW  MODERATE  HIGH  CRITICAL }
+
+model Estimation {
+  id                String             @id @default(cuid())
+  taskId            String
+  generatedAt       DateTime           @default(now())
+  optimisticHours   Float  
+  expectedHours     Float  
+  pessimisticHours  Float  
+  confidenceScore   Float  
+  modelVersion      String  
+  factorWeights     Json  
+  similarTaskIds    String[]  
+  explanation       String  
+  status            EstimationStatus   @default(ACTIVE)
+  revisedBy         String?  
+}
+
+enum EstimationStatus { ACTIVE  SUPERSEDED  MANUALLY_OVERRIDDEN }
+
+model Task {
+  id                String             @id @default(cuid())
+  externalId        String             @unique  
+  projectId         String
+  title             String
+  description       String             @db.Text
+  storyPoints       Int?
+  complexityScore   Float              @default(0)  
+  techDebtScore     Float              @default(0)
+  embedding         Float[]            @default([])  
+  createdAt         DateTime           @default(now())
+}

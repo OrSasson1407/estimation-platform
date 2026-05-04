@@ -1,0 +1,6 @@
+﻿{
+  "name": "@estimation/api-specs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Centralized OpenAPI 3.0 specifications for the platform"
+}

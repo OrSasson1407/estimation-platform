@@ -1,0 +1,41 @@
+﻿_format_version: "3.0"
+
+services:
+  # Route to the NestJS Project Service
+  - name: project-service
+    url: http://host.docker.internal:3001
+    routes:
+      - name: project-routes
+        paths:
+          - /api/v1/projects
+          - /api/v1/sprints
+          - /api/v1/tasks
+
+  # Route to the Python Estimation Service
+  - name: estimation-service
+    url: http://host.docker.internal:8000
+    routes:
+      - name: estimation-routes
+        paths:
+          - /api/v1/estimations
+
+  # Route to the Developer Service
+  - name: developer-service
+    url: http://host.docker.internal:3002
+    routes:
+      - name: developer-routes
+        paths:
+          - /api/v1/developers
+
+# Global Plugins enforced on all routes
+plugins:
+  # Enforce the 100 req/min rate limit from the security spec
+  - name: rate-limiting
+    config:
+      minute: 100
+      policy: local
+      fault_tolerant: true
+      hide_client_headers: false
+
+  # Placeholder for JWT validation plugin (to be configured with Vault later)
+  # - name: jwt

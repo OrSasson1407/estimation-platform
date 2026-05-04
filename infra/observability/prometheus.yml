@@ -1,0 +1,13 @@
+﻿global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'estimation-platform-services'
+    metrics_path: '/metrics'
+    static_configs:
+      # We will add all service ports here as we build them
+      - targets: 
+        - 'host.docker.internal:3001' # project-service
+        - 'host.docker.internal:3002' # developer-service
+        - 'host.docker.internal:8000' # estimation-service (Python)

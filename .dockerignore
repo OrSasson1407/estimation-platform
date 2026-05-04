@@ -1,0 +1,15 @@
+﻿node_modules
+npm-debug.log
+Dockerfile
+.dockerignore
+.git
+.gitignore
+.prettierignore
+.eslintrc.json
+commitlint.config.js
+README.md
+dist
+build
+.next
+*.pyc
+__pycache__
