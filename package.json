@@ -11,8 +11,13 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "db:seed": "echo 'Seeding db (placeholder)'",
-    "prepare": "husky"
+    "prepare": "husky",
+    "infra:up": "docker-compose -f infra/docker-compose.dev.yml up -d",
+    "infra:down": "docker-compose -f infra/docker-compose.dev.yml down -v",
+    "db:migrate": "cd packages/database && npx prisma migrate dev",
+    "db:seed": "cd packages/database && npx ts-node seed.ts",
+    "db:studio": "cd packages/database && npx prisma studio",
+    "format": "npx prettier --write \"**/*.{ts,tsx,json,md}\""
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.3",
@@ -24,7 +29,7 @@
     "typescript": "^5.0.0"
   },
   "lint-staged": {
-    "*.{ts,tsx,js,jsx,json,md}": [
+    "*.{ts,tsx,js,jsx,json,md,yml,yaml,prisma}": [
       "prettier --write"
     ]
   }

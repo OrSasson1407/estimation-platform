@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "@estimation/database",
   "version": "1.0.0",
   "private": true,
@@ -7,8 +7,10 @@
     "@prisma/client": "^5.0.0"
   },
   "devDependencies": {
+    "@estimation/tsconfig": "*",
+    "@types/node": "^20.19.39",
     "prisma": "^5.0.0",
-    "typescript": "^5.0.0",
-    "@estimation/tsconfig": "*"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }

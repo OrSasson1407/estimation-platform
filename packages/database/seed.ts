@@ -1,24 +1,35 @@
-﻿import { PrismaClient } from "@prisma/client";
+﻿import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("🌱 Seeding database...");
+  console.log('🌱 Seeding database...');
 
-  // Create a Mock Developer
-  await prisma.developer.upsert({
-    where: { email: "or@example.com" },
+  // 1. Create a Mock Organization
+  const org = await prisma.organization.upsert({
+    where: { slug: 'acme-corp' },
     update: {},
     create: {
-      name: "Or Sasson",
-      email: "or@example.com",
-      externalId: "jira-user-001",
-      estimationAcc: 0.95,
-      burnoutRisk: "LOW",
+      name: 'Acme Corporation',
+      slug: 'acme-corp',
     },
   });
 
-  console.log("✅ Seeding complete.");
+  // 2. Create a Mock Developer linked to the Organization
+  await prisma.developer.upsert({
+    where: { email: 'or@example.com' },
+    update: {},
+    create: {
+      name: 'Or Sasson',
+      email: 'or@example.com',
+      externalId: 'jira-user-001',
+      estimationAcc: 0.95,
+      burnoutRisk: 'LOW',
+      orgId: org.id, // <-- Here is the missing relational link!
+    },
+  });
+
+  console.log('✅ Seeding complete.');
 }
 
 main()
