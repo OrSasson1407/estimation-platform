@@ -1,3 +1,4 @@
+// apps/auth-service/src/main.ts  ← UPDATED: Helmet + CORS
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
@@ -5,13 +6,13 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Enforce runtime schema validation across all endpoints
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+
+  // Allow frontend origin; restrict in production via env
+  app.enableCors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+  });
 
   const port = process.env.PORT || 3001;
   await app.listen(port);

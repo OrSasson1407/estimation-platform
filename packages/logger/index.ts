@@ -1,32 +1,32 @@
-import winston from 'winston';
+// packages/logger/index.ts  ← UPDATED: Winston → Pino (spec requirement)
+import pino from 'pino';
 
 /**
- * Creates a standardized Winston logger instance.
- * @param serviceName - The name of the microservice (e.g., 'project-service')
+ * Creates a Pino logger instance with structured JSON output.
+ * In dev: pretty-printed. In production: raw JSON → Loki.
+ * Spec: observability.ts — "Structured logging via Pino (JSON output to Loki)"
  */
 export const createLogger = (serviceName: string) => {
-  return winston.createLogger({
-    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-    format: winston.format.combine(
-      winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-      winston.format.errors({ stack: true }),
-      winston.format.splat(),
-      winston.format.json(),
-    ),
-    defaultMeta: { service: serviceName },
-    transports: [
-      new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.colorize(),
-          winston.format.printf(({ timestamp, level, message, service, ...rest }) => {
-            const meta = Object.keys(rest).length ? JSON.stringify(rest) : '';
-            return `[${timestamp}] ${level} [${service}]: ${message} ${meta}`;
-          }),
-        ),
-      }),
-    ],
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  return pino({
+    name: serviceName,
+    level: isDev ? 'debug' : 'info',
+    ...(isDev && {
+      transport: {
+        target: 'pino-pretty',
+        options: { colorize: true, translateTime: 'SYS:standard' },
+      },
+    }),
+    formatters: {
+      level(label) {
+        return { level: label };
+      },
+    },
+    base: { service: serviceName },
+    timestamp: pino.stdTimeFunctions.isoTime,
   });
 };
 
-// Default export for ease of use
 export const logger = createLogger('system');
+export type Logger = ReturnType<typeof createLogger>;

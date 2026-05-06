@@ -1,13 +1,26 @@
-import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
+// apps/developer-service/src/developer-service.controller.ts  ← UPDATED: real guards
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Param,
+  Query,
+  Body,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { DeveloperService } from './developer-service.service';
 
 @Controller('api/v1/developers')
+@UseGuards(AuthGuard('jwt'))
 export class DeveloperController {
   constructor(private readonly developerService: DeveloperService) {}
 
   @Get(':id/profile')
-  async getProfile(@Param('id') id: string) {
-    return this.developerService.getProfile(id);
+  async getProfile(@Param('id') id: string, @Request() req: any) {
+    return this.developerService.getProfile(id, req.user.userId, req.user.role);
   }
 
   @Get(':id/velocity-history')
@@ -31,5 +44,10 @@ export class DeveloperController {
     @Body('projectId') projectId: string,
   ) {
     return this.developerService.simulateTeam(developerIds, projectId);
+  }
+
+  @Patch(':id/cognitive-load')
+  async updateLoad(@Param('id') id: string, @Body('load') load: number) {
+    return this.developerService.updateCognitiveLoad(id, load);
   }
 }

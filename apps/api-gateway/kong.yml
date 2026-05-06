@@ -1,41 +1,120 @@
-﻿_format_version: "3.0"
+﻿# apps/api-gateway/kong.yml  ← UPDATED: full service routing
+_format_version: '3.0'
+_transform: true
 
 services:
-  # Route to the NestJS Project Service
+  - name: auth-service
+    host: auth-service
+    port: 3001
+    protocol: http
+    routes:
+      - name: auth-login
+        paths: ['/api/v1/auth/login']
+        methods: [POST]
+      - name: auth-refresh
+        paths: ['/api/v1/auth/refresh']
+        methods: [POST]
+
   - name: project-service
-    url: http://host.docker.internal:3001
+    host: project-service
+    port: 3002
+    protocol: http
     routes:
-      - name: project-routes
-        paths:
-          - /api/v1/projects
-          - /api/v1/sprints
-          - /api/v1/tasks
+      - name: projects
+        paths: ['/api/v1/projects']
+        strip_path: false
 
-  # Route to the Python Estimation Service
-  - name: estimation-service
-    url: http://host.docker.internal:8000
-    routes:
-      - name: estimation-routes
-        paths:
-          - /api/v1/estimations
-
-  # Route to the Developer Service
   - name: developer-service
-    url: http://host.docker.internal:3002
+    host: developer-service
+    port: 3003
+    protocol: http
     routes:
-      - name: developer-routes
-        paths:
-          - /api/v1/developers
+      - name: developers
+        paths: ['/api/v1/developers']
+        strip_path: false
 
-# Global Plugins enforced on all routes
+  - name: collaboration-service
+    host: collaboration-service
+    port: 3004
+    protocol: http
+    routes:
+      - name: collaboration-ws
+        paths: ['/ws']
+        strip_path: false
+
+  - name: risk-service
+    host: risk-service
+    port: 3006
+    protocol: http
+    routes:
+      - name: risks
+        paths: ['/api/v1/risks']
+        strip_path: false
+
+  - name: analytics-service
+    host: analytics-service
+    port: 3007
+    protocol: http
+    routes:
+      - name: analytics
+        paths: ['/api/v1/analytics']
+        strip_path: false
+
+  - name: notification-service
+    host: notification-service
+    port: 3008
+    protocol: http
+    routes:
+      - name: notifications
+        paths: ['/api/v1/notifications']
+        strip_path: false
+
+  - name: integration-service
+    host: integration-service
+    port: 3005
+    protocol: http
+    routes:
+      - name: webhooks
+        paths: ['/api/v1/webhooks']
+        strip_path: false
+
+  - name: estimation-service
+    host: estimation-service
+    port: 8000
+    protocol: http
+    routes:
+      - name: estimations
+        paths: ['/api/v1/estimations']
+        strip_path: false
+
+  - name: simulation-service
+    host: simulation-service
+    port: 8001
+    protocol: http
+    routes:
+      - name: simulations
+        paths: ['/api/v1/simulations']
+        strip_path: false
+
 plugins:
-  # Enforce the 100 req/min rate limit from the security spec
+  - name: cors
+    config:
+      origins:
+        - '*'
+      credentials: true
+      methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Content-Type
+        - Authorization
+      max_age: 3600
+
   - name: rate-limiting
     config:
-      minute: 100
+      minute: 1000
       policy: local
-      fault_tolerant: true
-      hide_client_headers: false
-
-  # Placeholder for JWT validation plugin (to be configured with Vault later)
-  # - name: jwt

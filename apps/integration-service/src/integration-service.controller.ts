@@ -1,19 +1,29 @@
-import { Controller, Post, Body, Headers } from '@nestjs/common';
-import { JiraConnector } from './connectors/jira-connector';
+// apps/integration-service/src/integration-service.controller.ts  ← UPDATED
+import { Controller, Post, Body, Headers, RawBodyRequest, Req } from '@nestjs/common';
+import { IntegrationService } from './integration-service.service';
+import { Request } from 'express';
 
 @Controller('api/v1/webhooks')
 export class IntegrationController {
-  private jiraConnector = new JiraConnector();
+  constructor(private readonly integrationService: IntegrationService) {}
 
   @Post('jira')
-  async handleJiraWebhook(@Body() payload: any, @Headers('x-hub-signature') signature: string) {
-    // In production, verify the HMAC signature here
+  handleJira(
+    @Body() payload: any,
+    @Headers('x-hub-signature-256') signature: string,
+    @Req() req: RawBodyRequest<Request>,
+  ) {
+    const rawBody = req.rawBody?.toString() ?? JSON.stringify(payload);
+    return this.integrationService.handleJiraWebhook(payload, signature, rawBody);
+  }
 
-    const events = await this.jiraConnector.handleWebhookPayload(payload);
-
-    // TODO: Publish `events` to Kafka topic 'integrations.jira.synced'
-    console.log('Normalized events ready for Kafka:', events);
-
-    return { received: true, processedEvents: events.length };
+  @Post('github')
+  handleGitHub(
+    @Body() payload: any,
+    @Headers('x-hub-signature-256') signature: string,
+    @Req() req: RawBodyRequest<Request>,
+  ) {
+    const rawBody = req.rawBody?.toString() ?? JSON.stringify(payload);
+    return this.integrationService.handleGitHubWebhook(payload, signature, rawBody);
   }
 }

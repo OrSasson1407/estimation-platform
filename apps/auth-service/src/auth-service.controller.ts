@@ -1,5 +1,27 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+// apps/auth-service/src/auth-service.controller.ts  ← UPDATED: Zod validation + real login
+import {
+  Controller,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  UnauthorizedException,
+  UsePipes,
+} from '@nestjs/common';
+import { z } from 'zod';
 import { AuthService } from './auth-service.service';
+import { ZodValidationPipe } from './zod-validation.pipe';
+
+const LoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+const ApiKeySchema = z.object({
+  apiKey: z.string().min(32),
+});
+
+type LoginDto = z.infer<typeof LoginSchema>;
 
 @Controller('api/v1/auth')
 export class AuthController {
@@ -7,18 +29,16 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() loginDto: Record<string, any>) {
-    // Mock user matching the required JWT payload structure[cite: 2]
-    // We will connect this to the real Prisma DB shortly
-    const mockUser = {
-      id: 'user_abc123',
-      email: 'dev@company.com',
-      role: 'ENGINEERING_MANAGER',
-      orgId: 'org_xyz456',
-      teamIds: ['team_001'],
-      permissions: ['estimates:read', 'sprints:write'],
-    };
+  @UsePipes(new ZodValidationPipe(LoginSchema))
+  async login(@Body() dto: LoginDto) {
+    const user = await this.authService.validateUser(dto.email, dto.password);
+    if (!user) throw new UnauthorizedException('Invalid credentials');
+    return this.authService.generateToken(user);
+  }
 
-    return this.authService.generateToken(mockUser);
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Body('refreshToken') refreshToken: string) {
+    return this.authService.refreshToken(refreshToken);
   }
 }
