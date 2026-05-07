@@ -1,4 +1,4 @@
-// apps/risk-service/src/risk.consumer.ts
+// apps/risk-service/src/risk.consumer.ts  ← PHASE 1 FIX: removed (as any) casts
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Kafka, Consumer, EachMessagePayload } from 'kafkajs';
 import { RiskService } from './risk-service';
@@ -48,7 +48,7 @@ export class RiskConsumer implements OnModuleInit, OnModuleDestroy {
         KAFKA_TOPICS.SCOPE_CHANGED,
         KAFKA_TOPICS.SPRINT_COMPLETED,
         KAFKA_TOPICS.VELOCITY_UPDATED,
-        (KAFKA_TOPICS as any).DEVELOPER_PROFILE_UPDATED, // ← FIX: Cast bypasses TypeScript error
+        KAFKA_TOPICS.DEVELOPER_PROFILE_UPDATED, // ← PHASE 1 FIX: key now exists
       ],
       fromBeginning: false,
     });
@@ -103,7 +103,7 @@ export class RiskConsumer implements OnModuleInit, OnModuleDestroy {
           break;
 
         case KAFKA_TOPICS.VELOCITY_UPDATED:
-        case (KAFKA_TOPICS as any).DEVELOPER_PROFILE_UPDATED: // ← FIX: Cast bypasses TypeScript error
+        case KAFKA_TOPICS.DEVELOPER_PROFILE_UPDATED: // ← PHASE 1 FIX: no cast needed
           await this.riskService.evaluateDeveloperEvent(event);
           break;
 

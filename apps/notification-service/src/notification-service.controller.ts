@@ -1,16 +1,16 @@
-// apps/notification-service/src/notification-service.controller.ts  ← NEW
+// apps/notification-service/src/notification-service.controller.ts  ← PHASE 1 UPGRADE
 import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { NotificationService } from './notification-service.service';
+import { NotificationService, NotificationPayload } from './notification-service.service';
 
 @Controller('api/v1/notifications')
 @UseGuards(AuthGuard('jwt'))
 export class NotificationController {
   constructor(private readonly notificationService: NotificationService) {}
 
-  // Manual trigger endpoint — useful for testing and admin tools
+  // Internal endpoint: allows other services to directly trigger a notification
   @Post('send')
-  send(@Body() payload: any) {
+  send(@Body() payload: NotificationPayload) {
     return this.notificationService.dispatch(payload);
   }
 }

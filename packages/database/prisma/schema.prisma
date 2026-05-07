@@ -93,6 +93,14 @@ enum WebhookStatus {
   RETRYING
 }
 
+// ─── PHASE 1 NEW ENUM ─────────────────────────────────────────────────────────
+
+enum SimulationType {
+  WHAT_IF
+  STRESS_TEST
+  PORTFOLIO
+}
+
 // ─── ORGANIZATION ────────────────────────────────────────────────────────────
 
 model Organization {
@@ -106,7 +114,7 @@ model Organization {
   projects   Project[]
   developers Developer[]
   teams      Team[]
-  webhooks   Webhook[]      
+  webhooks   Webhook[]
   auditLogs  AuditLog[]
 
   @@index([slug])
@@ -178,14 +186,14 @@ model Team {
   orgId       String
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   name        String
-  description String?      
+  description String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
   members     TeamMember[]
   projects    Project[]
 
-  @@unique([orgId, name])  
+  @@unique([orgId, name])
   @@index([orgId])
 }
 
@@ -217,9 +225,10 @@ model Project {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  sprints     Sprint[]
-  tasks       Task[]
-  riskAlerts  RiskAlert[]
+  sprints           Sprint[]
+  tasks             Task[]
+  riskAlerts        RiskAlert[]
+  simulationResults SimulationResult[]
 
   @@index([orgId])
   @@index([status])
@@ -373,6 +382,21 @@ model RiskAlert {
   @@index([createdAt])
 }
 
+// ─── SIMULATION (PHASE 1 NEW) ─────────────────────────────────────────────────
+
+model SimulationResult {
+  id        String         @id @default(cuid())
+  projectId String
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type      SimulationType
+  result    Json
+  createdAt DateTime       @default(now())
+
+  @@index([projectId])
+  @@index([type])
+  @@index([createdAt])
+}
+
 // ─── WEBHOOKS ──────────────────────────────────────────────────────────────────
 
 model Webhook {
@@ -381,7 +405,7 @@ model Webhook {
   org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   url       String
   secret    String
-  events    String[]  
+  events    String[]
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -393,16 +417,16 @@ model Webhook {
 }
 
 model WebhookDelivery {
-  id        String         @id @default(cuid())
+  id        String           @id @default(cuid())
   webhookId String
-  webhook   Webhook        @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  webhook   Webhook          @relation(fields: [webhookId], references: [id], onDelete: Cascade)
   eventType WebhookEventType
   payload   Json
-  status    WebhookStatus  @default(PENDING)
-  attempts  Int            @default(0)
+  status    WebhookStatus    @default(PENDING)
+  attempts  Int              @default(0)
   lastError String?
   sentAt    DateTime?
-  createdAt DateTime       @default(now())
+  createdAt DateTime         @default(now())
 
   @@index([webhookId])
   @@index([status])

@@ -1,4 +1,4 @@
-﻿// packages/events/payloads.ts  ← UPDATED: full Kafka topic coverage per spec
+// packages/events/payloads.ts  ← PHASE 1 FIX: added DEVELOPER_PROFILE_UPDATED key
 import { BaseEvent } from './base.event';
 
 // ─── projects.task.created ────────────────────────────────────────────────────
@@ -157,6 +157,8 @@ export const KAFKA_TOPICS = {
   CONFIDENCE_LOW: 'estimation.confidence.low',
   VELOCITY_UPDATED: 'developers.velocity.updated',
   PROFILE_UPDATED: 'developers.profile.updated',
+  // PHASE 1 FIX: explicit alias so risk.consumer.ts no longer needs the `as any` cast
+  DEVELOPER_PROFILE_UPDATED: 'developers.profile.updated',
   RISK_ALERT: 'risks.alert.triggered',
   ANOMALY_DETECTED: 'risks.anomaly.detected',
   JIRA_SYNCED: 'integrations.jira.synced',

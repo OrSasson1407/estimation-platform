@@ -1,5 +1,5 @@
-// apps/risk-service/src/risk.controller.ts  ← UPDATED: resolve endpoint + JWT guard
-import { Controller, Get, Patch, Param, UseGuards } from '@nestjs/common';
+// apps/risk-service/src/risk.controller.ts  ← PHASE 1 UPGRADE
+import { Controller, Get, Patch, Param, Query, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RiskService } from './risk-service';
 
@@ -13,8 +13,13 @@ export class RiskController {
     return this.riskService.getProjectRisks(projectId);
   }
 
+  @Get('project/:projectId/history')
+  getAlertHistory(@Param('projectId') projectId: string, @Query('limit') limit?: string) {
+    return this.riskService.getAlertHistory(projectId, limit ? parseInt(limit) : 50);
+  }
+
   @Patch('alerts/:alertId/resolve')
-  resolveAlert(@Param('alertId') alertId: string) {
-    return this.riskService.resolveAlert(alertId);
+  resolveAlert(@Param('alertId') alertId: string, @Request() req: any) {
+    return this.riskService.resolveAlert(alertId, req.user.userId);
   }
 }
