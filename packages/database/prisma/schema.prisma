@@ -77,18 +77,38 @@ enum RiskCategory {
   ANOMALY
 }
 
+enum WebhookEventType {
+  ESTIMATE_GENERATED
+  RISK_ALERT_TRIGGERED
+  SPRINT_COMPLETED
+  TASK_STATUS_CHANGED
+  DEVELOPER_VELOCITY_UPDATED
+}
+
+enum WebhookStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+}
+
 // ─── ORGANIZATION ────────────────────────────────────────────────────────────
 
 model Organization {
   id         String      @id @default(cuid())
   name       String
   slug       String      @unique
+  apiKey     String      @unique @default(cuid())
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
 
   projects   Project[]
   developers Developer[]
   teams      Team[]
+  webhooks   Webhook[]      
+  auditLogs  AuditLog[]
+
+  @@index([slug])
 }
 
 // ─── DEVELOPER ───────────────────────────────────────────────────────────────
@@ -97,7 +117,7 @@ model Developer {
   id              String           @id @default(cuid())
   externalId      String           @unique
   orgId           String
-  org             Organization     @relation(fields: [orgId], references: [id])
+  org             Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   name            String
   email           String           @unique
   role            Role             @default(DEVELOPER)
@@ -105,6 +125,8 @@ model Developer {
   avgTaskDuration Float            @default(0)
   cognitiveLoad   Float            @default(0)
   burnoutRisk     BurnoutLevel     @default(LOW)
+  isActive        Boolean          @default(true)
+  lastActiveAt    DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -116,6 +138,7 @@ model Developer {
   @@index([orgId])
   @@index([estimationAcc])
   @@index([cognitiveLoad])
+  @@index([isActive])
 }
 
 model DeveloperSkill {
@@ -124,9 +147,12 @@ model DeveloperSkill {
   developer   Developer @relation(fields: [developerId], references: [id], onDelete: Cascade)
   skill       String
   level       Int       @default(1)
+  yearsExp    Int?
   createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@unique([developerId, skill])
+  @@index([skill])
 }
 
 model VelocityRecord {
@@ -134,25 +160,32 @@ model VelocityRecord {
   developerId String
   developer   Developer @relation(fields: [developerId], references: [id], onDelete: Cascade)
   sprintId    String
-  sprint      Sprint    @relation(fields: [sprintId], references: [id])
+  sprint      Sprint    @relation(fields: [sprintId], references: [id], onDelete: Cascade)
   points      Float
   hours       Float
   recordedAt  DateTime  @default(now())
 
   @@index([developerId])
+  @@index([sprintId])
+  @@index([recordedAt])
 }
 
 // ─── TEAM ─────────────────────────────────────────────────────────────────────
 
 model Team {
-  id        String       @id @default(cuid())
-  orgId     String
-  org       Organization @relation(fields: [orgId], references: [id])
-  name      String
-  createdAt DateTime     @default(now())
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-  members   TeamMember[]
-  projects  Project[]
+  members     TeamMember[]
+  projects    Project[]
+
+  @@unique([orgId, name])  
+  @@index([orgId])
 }
 
 model TeamMember {
@@ -164,6 +197,7 @@ model TeamMember {
   joinedAt    DateTime  @default(now())
 
   @@unique([teamId, developerId])
+  @@index([teamId])
 }
 
 // ─── PROJECT ──────────────────────────────────────────────────────────────────
@@ -171,7 +205,7 @@ model TeamMember {
 model Project {
   id          String        @id @default(cuid())
   orgId       String
-  org         Organization  @relation(fields: [orgId], references: [id])
+  org         Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   teamId      String?
   team        Team?         @relation(fields: [teamId], references: [id])
   name        String
@@ -188,6 +222,7 @@ model Project {
 
   @@index([orgId])
   @@index([status])
+  @@index([teamId])
 }
 
 // ─── SPRINT ───────────────────────────────────────────────────────────────────
@@ -197,16 +232,18 @@ model Sprint {
   projectId       String
   project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   name            String
-  goal            String?
+  goal            String?          @db.Text
   startDate       DateTime
   endDate         DateTime
   status          SprintStatus     @default(PLANNED)
   createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   sprintTasks     SprintTask[]
   velocityRecords VelocityRecord[]
 
   @@index([projectId])
+  @@index([status])
 }
 
 model SprintTask {
@@ -218,6 +255,7 @@ model SprintTask {
   addedAt  DateTime @default(now())
 
   @@unique([sprintId, taskId])
+  @@index([sprintId])
 }
 
 // ─── TASK ─────────────────────────────────────────────────────────────────────
@@ -261,14 +299,15 @@ model TaskAssignment {
   assignedAt  DateTime  @default(now())
 
   @@unique([taskId, developerId])
+  @@index([taskId])
 }
 
 model TaskDependency {
   id             String   @id @default(cuid())
   blockingTaskId String
-  blockingTask   Task     @relation("BlockingTask", fields: [blockingTaskId], references: [id])
+  blockingTask   Task     @relation("BlockingTask", fields: [blockingTaskId], references: [id], onDelete: Cascade)
   blockedTaskId  String
-  blockedTask    Task     @relation("BlockedTask", fields: [blockedTaskId], references: [id])
+  blockedTask    Task     @relation("BlockedTask", fields: [blockedTaskId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
 
   @@unique([blockingTaskId, blockedTaskId])
@@ -291,11 +330,13 @@ model Estimation {
   explanation      String           @db.Text
   status           EstimationStatus @default(ACTIVE)
   revisedBy        String?
+  revisedAt        DateTime?
 
   feedbackFlags    FeedbackFlag[]
 
   @@index([taskId])
   @@index([status])
+  @@index([generatedAt])
 }
 
 model FeedbackFlag {
@@ -305,6 +346,8 @@ model FeedbackFlag {
   flaggedBy    String
   reason       String
   createdAt    DateTime   @default(now())
+
+  @@index([estimationId])
 }
 
 // ─── RISK ─────────────────────────────────────────────────────────────────────
@@ -319,11 +362,49 @@ model RiskAlert {
   description String       @db.Text
   resolved    Boolean      @default(false)
   resolvedAt  DateTime?
+  resolvedBy  String?
   createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   @@index([projectId])
   @@index([severity])
   @@index([resolved])
+  @@index([createdAt])
+}
+
+// ─── WEBHOOKS ──────────────────────────────────────────────────────────────────
+
+model Webhook {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  url       String
+  secret    String
+  events    String[]  
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries WebhookDelivery[]
+
+  @@index([orgId])
+  @@index([isActive])
+}
+
+model WebhookDelivery {
+  id        String         @id @default(cuid())
+  webhookId String
+  webhook   Webhook        @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  eventType WebhookEventType
+  payload   Json
+  status    WebhookStatus  @default(PENDING)
+  attempts  Int            @default(0)
+  lastError String?
+  sentAt    DateTime?
+  createdAt DateTime       @default(now())
+
+  @@index([webhookId])
+  @@index([status])
 }
 
 // ─── AUDIT LOG ────────────────────────────────────────────────────────────────
@@ -331,14 +412,17 @@ model RiskAlert {
 model AuditLog {
   id         String   @id @default(cuid())
   orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   userId     String
   action     String
   entityType String
   entityId   String
   metadata   Json?
+  ipAddress  String?
   createdAt  DateTime @default(now())
 
   @@index([orgId])
   @@index([userId])
   @@index([entityType, entityId])
+  @@index([createdAt])
 }
