@@ -1,74 +1,98 @@
-﻿# apps/estimation-service/src/main.py
-from fastapi import FastAPI, HTTPException, Path, Depends
+﻿# apps/estimation-service/src/main.py  ← UPGRADED v2
+from fastapi import FastAPI, HTTPException, Path, Header
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Histogram, Counter, generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-import uvicorn
-import os
+import uvicorn, os, time, uuid, json
+import datetime as dt
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import StandardScaler
 import joblib
 
-app = FastAPI(title="Estimation Service", version="1.0.0")
+# ── Structured logging ────────────────────────────────────────────────────────
+def log(level: str, event: str, **kwargs):
+    import json as _j
+    print(_j.dumps({"level": level, "event": event, "service": "estimation-service", **kwargs}))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
-    allow_methods=["*"],
-    allow_headers=["*"],
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+ESTIMATION_DURATION = Histogram(
+    "estimation_generate_duration_seconds",
+    "Time to generate a single-task estimate",
+    labelnames=["model_version", "confidence_tier"],
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5],
+)
+ESTIMATION_COUNTER = Counter(
+    "estimations_generated_total", "Total estimation requests",
+    labelnames=["model_version"],
+)
+OVERRIDE_COUNTER = Counter("estimations_overridden_total", "Manual overrides applied")
+CONFIDENCE_HISTOGRAM = Histogram(
+    "estimation_confidence_score", "Distribution of confidence scores",
+    buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
 )
 
 # ── Feature columns per spec ──────────────────────────────────────────────────
 FEATURE_COLS = [
-    "complexity_score",       # 0-100, NLP-derived
-    "tech_debt_score",        # 0-100, SonarQube
-    "developer_accuracy",     # rolling 90-day accuracy
-    "domain_familiarity",     # 0-1 cosine similarity to past tasks
-    "team_synergy_score",     # 0-1 pairwise historical performance
-    "dependency_count",       # blocking dependency count
-    "similar_task_avg_hours", # mean of top-5 historical similar tasks
-    "sprint_load_factor",     # team capacity utilisation 0-1
+    "complexity_score", "tech_debt_score", "developer_accuracy",
+    "domain_familiarity", "team_synergy_score", "dependency_count",
+    "similar_task_avg_hours", "sprint_load_factor",
 ]
 
-# ── Stacked ensemble (loaded from disk in production, trained inline for dev) ─
-def build_dev_models():
-    """Build and return untrained model pipeline for local development."""
-    gbm   = GradientBoostingRegressor(n_estimators=100, max_depth=4, random_state=42)
-    rf    = RandomForestRegressor(n_estimators=100, min_samples_leaf=3, random_state=42)
-    bayes = BayesianRidge()
-    scaler = StandardScaler()
-    return gbm, rf, bayes, scaler
+# ── In-memory stores (wire to asyncpg + PostgreSQL in production) ─────────────
+_estimation_store: Dict[str, Dict] = {}
+_audit_log: List[Dict] = []
 
-MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
+# ── Stacked ensemble ──────────────────────────────────────────────────────────
+def build_dev_models():
+    return (
+        GradientBoostingRegressor(n_estimators=100, max_depth=4, random_state=42),
+        RandomForestRegressor(n_estimators=100, min_samples_leaf=3, random_state=42),
+        BayesianRidge(),
+        StandardScaler(),
+    )
+
+MODEL_PATH    = os.getenv("MODEL_PATH", "model.joblib")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v2.0.0-dev")
 
 try:
     bundle = joblib.load(MODEL_PATH)
     gbm, rf, bayes, scaler = bundle["gbm"], bundle["rf"], bundle["bayes"], bundle["scaler"]
-    print(f"✅ Loaded trained models from {MODEL_PATH}")
+    log("info", "model_loaded", path=MODEL_PATH, version=MODEL_VERSION)
 except Exception:
-    print("⚠️  No trained model found — using untrained dev models. Run ML pipeline first.")
+    log("warn", "model_not_found", fallback="dev_models")
     gbm, rf, bayes, scaler = build_dev_models()
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+app = FastAPI(title="Estimation Service", version="2.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
+    allow_methods=["*"], allow_headers=["*"],
+)
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 class EstimationRequest(BaseModel):
     taskId: str
     teamId: str
     sprintId: Optional[str] = None
-    features: Optional[Dict[str, float]] = None  # override feature values for testing
+    features: Optional[Dict[str, float]] = None
 
 class FeatureVector(BaseModel):
-    complexity_score: float = Field(default=50.0, ge=0, le=100)
-    tech_debt_score: float = Field(default=20.0, ge=0, le=100)
-    developer_accuracy: float = Field(default=0.8, ge=0, le=1)
-    domain_familiarity: float = Field(default=0.5, ge=0, le=1)
-    team_synergy_score: float = Field(default=0.75, ge=0, le=1)
-    dependency_count: int = Field(default=1, ge=0)
-    similar_task_avg_hours: float = Field(default=8.0, ge=0)
-    sprint_load_factor: float = Field(default=0.7, ge=0, le=1)
+    complexity_score: float       = Field(default=50.0, ge=0, le=100)
+    tech_debt_score: float        = Field(default=20.0, ge=0, le=100)
+    developer_accuracy: float     = Field(default=0.8,  ge=0, le=1)
+    domain_familiarity: float     = Field(default=0.5,  ge=0, le=1)
+    team_synergy_score: float     = Field(default=0.75, ge=0, le=1)
+    dependency_count: int         = Field(default=1,    ge=0)
+    similar_task_avg_hours: float = Field(default=8.0,  ge=0)
+    sprint_load_factor: float     = Field(default=0.7,  ge=0, le=1)
 
 class EstimationResult(BaseModel):
+    id: str
     taskId: str
     optimisticHours: float
     expectedHours: float
@@ -78,129 +102,236 @@ class EstimationResult(BaseModel):
     factorWeights: Dict[str, float]
     explanation: str
     similarTaskIds: List[str]
+    status: str = "ACTIVE"
+
+class OverrideRequest(BaseModel):
+    hours: float = Field(gt=0)
+    reason: str  = Field(min_length=5)
+
+class BulkEstimationRequest(BaseModel):
+    taskIds: List[str]
+    teamId: str
+    sprintId: Optional[str] = None
 
 # ── Inference helpers ─────────────────────────────────────────────────────────
-def extract_features(req: EstimationRequest) -> np.ndarray:
-    """Build feature vector — uses req.features override or sensible defaults."""
+def extract_features(req: EstimationRequest):
     fv = FeatureVector(**(req.features or {}))
-    return np.array([[
-        fv.complexity_score,
-        fv.tech_debt_score,
-        fv.developer_accuracy,
-        fv.domain_familiarity,
-        fv.team_synergy_score,
-        fv.dependency_count,
-        fv.similar_task_avg_hours,
-        fv.sprint_load_factor,
+    X  = np.array([[
+        fv.complexity_score, fv.tech_debt_score, fv.developer_accuracy,
+        fv.domain_familiarity, fv.team_synergy_score, fv.dependency_count,
+        fv.similar_task_avg_hours, fv.sprint_load_factor,
     ]])
+    return X, fv
 
 def predict_ensemble(X: np.ndarray) -> Dict[str, float]:
-    """Run stacked ensemble: GBM + RF + BayesianRidge, average predictions."""
     try:
         Xs = scaler.transform(X)
     except Exception:
-        Xs = X  # scaler not fitted yet in dev mode
-
+        Xs = X
     preds = []
     for model in [gbm, rf, bayes]:
         try:
             preds.append(float(model.predict(Xs)[0]))
         except Exception:
-            # Model not fitted — use feature-based heuristic
-            complexity = float(X[0][0])
-            preds.append(max(2.0, complexity / 5.0))
-
+            preds.append(max(2.0, float(X[0][0]) / 5.0))
     expected = float(np.mean(preds))
     std      = float(np.std(preds)) if len(preds) > 1 else expected * 0.2
-
     return {
-        "expected": round(expected, 2),
-        "optimistic": round(max(1.0, expected - std * 1.5), 2),
+        "expected":    round(max(0.5, expected), 2),
+        "optimistic":  round(max(0.5, expected - std * 1.5), 2),
         "pessimistic": round(expected + std * 2.0, 2),
-        "std": std,
+        "std":         std,
     }
 
 def compute_confidence(std: float, expected: float) -> float:
-    """Confidence inversely proportional to relative uncertainty."""
-    if expected <= 0:
-        return 0.5
-    cv = std / expected  # coefficient of variation
+    if expected <= 0: return 0.5
+    cv = std / expected
     return round(max(0.1, min(0.99, 1.0 - cv)), 3)
+
+def confidence_tier(score: float) -> str:
+    if score >= 0.8: return "HIGH"
+    if score >= 0.6: return "MEDIUM"
+    return "LOW"
 
 def build_factor_weights(X: np.ndarray) -> Dict[str, float]:
     return {
-        "complexity":    round(float(X[0][0]) / 100 * 0.4, 3),
+        "complexity":    round(float(X[0][0]) / 100 * 0.4,  3),
         "techDebt":      round(float(X[0][1]) / 100 * 0.15, 3),
-        "devExperience": round(float(X[0][2]) * 0.25, 3),
-        "domainFit":     round(float(X[0][3]) * 0.1, 3),
-        "teamSynergy":   round(float(X[0][4]) * 0.1, 3),
+        "devExperience": round(float(X[0][2]) * 0.25,        3),
+        "domainFit":     round(float(X[0][3]) * 0.10,        3),
+        "teamSynergy":   round(float(X[0][4]) * 0.10,        3),
     }
 
 def build_explanation(fv: FeatureVector, result: Dict) -> str:
     parts = []
-    if fv.complexity_score > 70:
-        parts.append("high task complexity")
-    if fv.tech_debt_score > 50:
-        parts.append("significant technical debt")
-    if fv.developer_accuracy < 0.7:
-        parts.append("developer historical accuracy below average")
-    if fv.dependency_count > 3:
-        parts.append(f"{fv.dependency_count} blocking dependencies detected")
-    if fv.sprint_load_factor > 0.85:
-        parts.append("team near capacity")
-    if not parts:
-        parts.append("standard task with moderate complexity")
-    return f"Estimate driven by: {', '.join(parts)}. Expected {result['expected']}h with ±{round(result['std'], 1)}h uncertainty."
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-@app.post("/api/v1/estimations/generate", response_model=EstimationResult)
-async def generate_estimation(request: EstimationRequest):
-    X = extract_features(request)
-    result = predict_ensemble(X)
-    fv = FeatureVector(**(request.features or {}))
-    confidence = compute_confidence(result["std"], result["expected"])
-
-    return EstimationResult(
-        taskId=request.taskId,
-        optimisticHours=result["optimistic"],
-        expectedHours=result["expected"],
-        pessimisticHours=result["pessimistic"],
-        confidenceScore=confidence,
-        modelVersion=os.getenv("MODEL_VERSION", "v1.0.0-dev"),
-        factorWeights=build_factor_weights(X),
-        explanation=build_explanation(fv, result),
-        similarTaskIds=[],  # populated by pgvector search in production
+    if fv.complexity_score > 70:     parts.append("high task complexity")
+    if fv.tech_debt_score > 50:      parts.append("significant technical debt")
+    if fv.developer_accuracy < 0.7:  parts.append("below-average developer accuracy")
+    if fv.dependency_count > 3:      parts.append(f"{fv.dependency_count} blocking dependencies")
+    if fv.sprint_load_factor > 0.85: parts.append("team near capacity")
+    if fv.domain_familiarity < 0.3:  parts.append("low domain familiarity")
+    if not parts:                     parts.append("standard task with moderate complexity")
+    unc = round(result["std"], 1)
+    return (
+        f"Estimate driven by: {', '.join(parts)}. "
+        f"Expected {result['expected']}h with ±{unc}h uncertainty "
+        f"(optimistic {result['optimistic']}h → pessimistic {result['pessimistic']}h)."
     )
 
-@app.get("/api/v1/estimations/{id}")
+def mock_similar_task_ids(fv: FeatureVector) -> List[str]:
+    """
+    Production: pgvector cosine similarity —
+      SELECT id FROM tasks ORDER BY embedding <=> $embedding LIMIT 5
+    Dev: deterministic mock based on feature hash.
+    """
+    base = abs(int(fv.complexity_score * 100 + fv.tech_debt_score * 10))
+    n    = min(5, max(1, int(fv.domain_familiarity * 5) + 1))
+    return [f"task_{(base + i) % 9999:04d}" for i in range(n)]
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/estimations/generate", response_model=EstimationResult, status_code=201)
+async def generate_estimation(request: EstimationRequest):
+    t0 = time.perf_counter()
+    X, fv      = extract_features(request)
+    result     = predict_ensemble(X)
+    confidence = compute_confidence(result["std"], result["expected"])
+    tier       = confidence_tier(confidence)
+    est_id     = f"est_{uuid.uuid4().hex[:12]}"
+
+    estimation = EstimationResult(
+        id=est_id, taskId=request.taskId,
+        optimisticHours=result["optimistic"], expectedHours=result["expected"],
+        pessimisticHours=result["pessimistic"], confidenceScore=confidence,
+        modelVersion=MODEL_VERSION, factorWeights=build_factor_weights(X),
+        explanation=build_explanation(fv, result), similarTaskIds=mock_similar_task_ids(fv),
+    )
+    _estimation_store[est_id] = estimation.model_dump()
+
+    elapsed = time.perf_counter() - t0
+    ESTIMATION_DURATION.labels(model_version=MODEL_VERSION, confidence_tier=tier).observe(elapsed)
+    ESTIMATION_COUNTER.labels(model_version=MODEL_VERSION).inc()
+    CONFIDENCE_HISTOGRAM.observe(confidence)
+
+    log("info", "estimate_generated",
+        estimationId=est_id, taskId=request.taskId,
+        expectedHours=result["expected"], confidenceScore=confidence,
+        durationMs=round(elapsed * 1000, 2))
+    return estimation
+
+
+@app.get("/api/v1/estimations/{id}", response_model=EstimationResult)
 async def get_estimation(id: str = Path(...)):
-    # In production: query PostgreSQL via asyncpg
-    raise HTTPException(status_code=404, detail=f"Estimation {id} not found (wire to DB)")
+    est = _estimation_store.get(id)
+    if not est:
+        raise HTTPException(status_code=404, detail=f"Estimation {id} not found")
+    return est
+
 
 @app.get("/api/v1/estimations/{id}/explanation")
 async def get_explanation(id: str = Path(...)):
+    est = _estimation_store.get(id)
+    if not est:
+        raise HTTPException(status_code=404, detail=f"Estimation {id} not found")
     return {
+        "estimationId": id,
         "factors": [
-            {"name": "complexity",    "weight": 0.40, "description": "NLP-derived task complexity score"},
-            {"name": "devExperience", "weight": 0.25, "description": "Developer 90-day accuracy rolling average"},
-            {"name": "techDebt",      "weight": 0.15, "description": "SonarQube sqale_index normalised score"},
-            {"name": "domainFit",     "weight": 0.10, "description": "Cosine similarity to developer past tasks"},
-            {"name": "teamSynergy",   "weight": 0.10, "description": "Pairwise team historical performance"},
+            {"name": "complexity",    "weight": 0.40, "value": est["factorWeights"].get("complexity"),
+             "description": "NLP-derived task complexity score (0-100)"},
+            {"name": "devExperience", "weight": 0.25, "value": est["factorWeights"].get("devExperience"),
+             "description": "Developer 90-day rolling accuracy average"},
+            {"name": "techDebt",      "weight": 0.15, "value": est["factorWeights"].get("techDebt"),
+             "description": "SonarQube sqale_index normalised (0-100)"},
+            {"name": "domainFit",     "weight": 0.10, "value": est["factorWeights"].get("domainFit"),
+             "description": "Cosine similarity to developer past tasks"},
+            {"name": "teamSynergy",   "weight": 0.10, "value": est["factorWeights"].get("teamSynergy"),
+             "description": "Pairwise team historical performance"},
         ],
-        "naturalLanguage": "Estimate anchored on task complexity and developer historical accuracy.",
-        "similarTasks": [],
+        "naturalLanguage": est["explanation"],
+        "similarTasks":    [{"id": tid} for tid in est["similarTaskIds"]],
+        "confidenceScore": est["confidenceScore"],
+        "modelVersion":    est["modelVersion"],
     }
 
+
+@app.patch("/api/v1/estimations/{id}/override", response_model=EstimationResult)
+async def override_estimation(
+    override: OverrideRequest,
+    id: str = Path(...),
+    x_user_id: Optional[str]   = Header(None),
+    x_user_role: Optional[str] = Header(None),
+):
+    """MANAGER/TEAM_LEAD only. Supersedes active estimation + writes immutable audit entry."""
+    if x_user_role not in ("ENGINEERING_MANAGER", "TEAM_LEAD"):
+        raise HTTPException(status_code=403, detail="Only ENGINEERING_MANAGER or TEAM_LEAD may override")
+
+    est = _estimation_store.get(id)
+    if not est:
+        raise HTTPException(status_code=404, detail=f"Estimation {id} not found")
+    if est["status"] != "ACTIVE":
+        raise HTTPException(status_code=409, detail=f"Estimation {id} is already {est['status']}")
+
+    prev_hours = est["expectedHours"]
+    est["status"]    = "MANUALLY_OVERRIDDEN"
+    est["revisedBy"] = x_user_id or "unknown"
+
+    new_id  = f"est_{uuid.uuid4().hex[:12]}"
+    new_est = {**est,
+        "id": new_id, "expectedHours": override.hours,
+        "optimisticHours": round(override.hours * 0.85, 2),
+        "pessimisticHours": round(override.hours * 1.20, 2),
+        "status": "ACTIVE",
+        "explanation": f"Override: {prev_hours}h → {override.hours}h. Reason: {override.reason}",
+        "revisedBy": x_user_id or "unknown",
+    }
+    _estimation_store[new_id] = new_est
+
+    _audit_log.append({
+        "auditId": str(uuid.uuid4()), "action": "ESTIMATION_OVERRIDE",
+        "actor": x_user_id or "unknown", "role": x_user_role,
+        "estimationId": id, "newEstimationId": new_id,
+        "previousHours": prev_hours, "revisedHours": override.hours,
+        "reason": override.reason,
+        "timestamp": dt.datetime.utcnow().isoformat() + "Z",
+    })
+    OVERRIDE_COUNTER.inc()
+    log("warn", "estimation_overridden",
+        estimationId=id, newEstimationId=new_id,
+        previousHours=prev_hours, revisedHours=override.hours,
+        actor=x_user_id, reason=override.reason)
+    return new_est
+
+
 @app.post("/api/v1/estimations/bulk")
-async def bulk_estimate(requests: List[EstimationRequest]):
-    # Accepts up to 50 tasks; returns all results synchronously (async Kafka variant in prod)
-    if len(requests) > 50:
+async def bulk_estimate(payload: BulkEstimationRequest):
+    if len(payload.taskIds) > 50:
         raise HTTPException(status_code=400, detail="Maximum 50 tasks per bulk request")
-    return [await generate_estimation(r) for r in requests]
+    results = []
+    for task_id in payload.taskIds:
+        req = EstimationRequest(taskId=task_id, teamId=payload.teamId, sprintId=payload.sprintId)
+        results.append(await generate_estimation(req))
+    return results
+
+
+@app.get("/api/v1/estimations/audit-log")
+async def get_audit_log(limit: int = 50, x_user_role: Optional[str] = Header(None)):
+    if x_user_role not in ("ENGINEERING_MANAGER", "EXECUTIVE"):
+        raise HTTPException(status_code=403, detail="Audit log requires ENGINEERING_MANAGER role")
+    return {"entries": _audit_log[-limit:], "total": len(_audit_log)}
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "estimation-service"}
+    return {
+        "status": "ok", "service": "estimation-service", "version": "2.0.0",
+        "modelVersion": MODEL_VERSION, "estimationsStored": len(_estimation_store),
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

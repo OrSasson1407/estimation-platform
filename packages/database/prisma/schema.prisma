@@ -83,6 +83,7 @@ enum WebhookEventType {
   SPRINT_COMPLETED
   TASK_STATUS_CHANGED
   DEVELOPER_VELOCITY_UPDATED
+  DEVELOPER_PROFILE_UPDATED
 }
 
 enum WebhookStatus {
@@ -177,7 +178,7 @@ model Team {
   orgId       String
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   name        String
-  description String?
+  description String?      
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
