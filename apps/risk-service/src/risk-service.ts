@@ -1,9 +1,10 @@
 // apps/risk-service/src/risk-service.ts
 import { Injectable, NotFoundException, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { prisma, RiskCategory } from '@estimation/database'; // ← FIX: Imported RiskCategory
+import { prisma, RiskCategory } from '@estimation/database';
 import { createLogger } from '@estimation/logger';
 import { KAFKA_TOPICS } from '@estimation/events';
 import { Kafka, Producer } from 'kafkajs';
+import { AnomalyDetector } from './anomaly.detector';
 
 const logger = createLogger('risk-service');
 
@@ -18,7 +19,7 @@ const DEPENDENCY_BOTTLENECK_MIN = 4;
 const VELOCITY_DROP_THRESHOLD = 0.3;
 
 interface AlertInput {
-  category: RiskCategory; // ← FIX: Strictly typed to match Prisma Schema
+  category: RiskCategory;
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   title: string;
   description: string;
@@ -28,14 +29,19 @@ interface AlertInput {
 export class RiskService implements OnModuleInit, OnModuleDestroy {
   private producer: Producer;
 
-  constructor() {
-    const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] });
+  constructor(private readonly anomalyDetector: AnomalyDetector) {
+    const kafka = new Kafka({
+      clientId: 'risk-service',
+      brokers: [(process.env.KAFKA_BROKER || 'localhost:9092')],
+    });
     this.producer = kafka.producer();
   }
 
   async onModuleInit() {
     await this.producer.connect();
+    logger.info('Kafka producer connected');
   }
+
   async onModuleDestroy() {
     await this.producer.disconnect();
   }
@@ -74,6 +80,27 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // Rule 3: anomaly detection on estimation error vs project baseline
+    if (data.actualHours && data.expectedHours && projectId) {
+      const anomaly = await this.anomalyDetector.detectEstimationAnomaly(
+        projectId,
+        data.complexityScore ?? 50,
+        data.actualHours,
+        data.expectedHours,
+      );
+
+      if (anomaly.isAnomaly && anomaly.severity && anomaly.direction === 'above') {
+        alerts.push(
+          await this.createAlert(projectId, {
+            category: 'ANOMALY',
+            severity: anomaly.severity,
+            title: 'Estimation Anomaly Detected',
+            description: `Task overran by ${anomaly.value.toFixed(0)}% — z-score ${anomaly.zScore} (mean error ${anomaly.mean.toFixed(0)}% ±${anomaly.stdDev.toFixed(0)}% for this project). Model retraining signal.`,
+          }),
+        );
+      }
+    }
+
     return alerts;
   }
 
@@ -81,7 +108,7 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
     const { projectId, data } = event;
     const alerts: any[] = [];
 
-    // Rule 3: time drift — actual vs estimated hours
+    // Rule 4: time drift — actual vs estimated hours
     if (data.actualHours && data.estimatedHours && data.estimatedHours > 0) {
       const driftPct = ((data.actualHours - data.estimatedHours) / data.estimatedHours) * 100;
       if (driftPct >= TIME_DRIFT_CRITICAL_PERCENT) {
@@ -105,7 +132,7 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Rule 4: dependency bottleneck
+    // Rule 5: dependency bottleneck
     if (data.blockedByCount !== undefined && data.blockedByCount >= DEPENDENCY_BOTTLENECK_MIN) {
       alerts.push(
         await this.createAlert(projectId, {
@@ -123,7 +150,7 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
   async evaluateDeveloperEvent(event: any): Promise<any> {
     const { projectId, data } = event;
 
-    // Rule 5: cognitive overload
+    // Rule 6: cognitive overload
     if (data.cognitiveLoad >= COGNITIVE_LOAD_CRITICAL) {
       return this.createAlert(projectId, {
         category: 'DEVELOPER_OVERLOAD',
@@ -133,7 +160,24 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    // Rule 6: sudden velocity drop
+    // Rule 7: statistical velocity anomaly vs personal baseline
+    if (data.currentVelocity !== undefined && data.developerId) {
+      const anomaly = await this.anomalyDetector.detectVelocityAnomaly(
+        data.developerId,
+        data.currentVelocity,
+      );
+
+      if (anomaly.isAnomaly && anomaly.direction === 'below' && anomaly.severity) {
+        return this.createAlert(projectId, {
+          category: 'BURNOUT_RISK',
+          severity: anomaly.severity,
+          title: 'Statistical Velocity Anomaly',
+          description: `Developer ${data.developerId} velocity ${data.currentVelocity} pts is ${Math.abs(anomaly.zScore).toFixed(1)}σ below personal baseline (μ=${anomaly.mean} ±${anomaly.stdDev}). Burnout or blocker risk.`,
+        });
+      }
+    }
+
+    // Rule 8: simple threshold drop (fallback when not enough history)
     if (data.currentVelocity !== undefined && data.previousVelocity > 0) {
       const drop = (data.previousVelocity - data.currentVelocity) / data.previousVelocity;
       if (drop >= VELOCITY_DROP_THRESHOLD) {
@@ -153,7 +197,7 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
     const { projectId, data } = event;
     const alerts: any[] = [];
 
-    // Rule 7: scope creep during sprint
+    // Rule 9: scope creep during sprint
     if (data.deltaPoints && data.deltaPoints >= SCOPE_CREEP_POINTS_DELTA) {
       alerts.push(
         await this.createAlert(projectId, {
@@ -165,7 +209,7 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    // Rule 8: sprint velocity below plan
+    // Rule 10: sprint velocity below plan
     if (data.completedPoints !== undefined && data.plannedPoints > 0) {
       const completion = data.completedPoints / data.plannedPoints;
       if (completion < 0.65) {
@@ -214,10 +258,12 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
   async resolveAlert(alertId: string, resolvedBy?: string) {
     const alert = await prisma.riskAlert.findUnique({ where: { id: alertId } });
     if (!alert) throw new NotFoundException(`Alert ${alertId} not found`);
+
     const resolved = await prisma.riskAlert.update({
       where: { id: alertId },
       data: { resolved: true, resolvedAt: new Date() },
     });
+
     logger.info({ alertId, resolvedBy }, 'risk_alert_resolved');
     return resolved;
   }
@@ -228,6 +274,10 @@ export class RiskService implements OnModuleInit, OnModuleDestroy {
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
+  }
+
+  async runVelocityAnomalyCheck(developerId: string, currentVelocity: number) {
+    return this.anomalyDetector.detectVelocityAnomaly(developerId, currentVelocity);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────

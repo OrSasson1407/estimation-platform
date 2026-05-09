@@ -1,5 +1,5 @@
-// apps/project-service/src/sprint.service.ts  ← PHASE 1 NEW FILE
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+// apps/project-service/src/sprint.service.ts
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { prisma } from '@estimation/database';
 import { createLogger } from '@estimation/logger';
 import { KAFKA_TOPICS } from '@estimation/events';
@@ -33,7 +33,10 @@ export class SprintService {
   private producer: Producer;
 
   constructor() {
-    const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] });
+    const kafka = new Kafka({
+      clientId: 'sprint-service',
+      brokers: [(process.env.KAFKA_BROKER || 'localhost:9092')],
+    });
     this.producer = kafka.producer();
   }
 
@@ -53,6 +56,11 @@ export class SprintService {
     const end = new Date(dto.endDate);
     if (end <= start) throw new BadRequestException('endDate must be after startDate');
 
+    // Guard: only one ACTIVE sprint per project at a time
+    const activeSprint = await prisma.sprint.findFirst({
+      where: { projectId, status: 'ACTIVE' },
+    });
+
     const sprint = await prisma.sprint.create({
       data: {
         projectId,
@@ -64,13 +72,17 @@ export class SprintService {
       },
     });
 
-    logger.info({ sprintId: sprint.id, projectId }, 'sprint_created');
+    logger.info({ sprintId: sprint.id, projectId, activeSprint: activeSprint?.id }, 'sprint_created');
     return sprint;
   }
 
   async updateSprint(sprintId: string, dto: UpdateSprintDto) {
     const sprint = await prisma.sprint.findUnique({ where: { id: sprintId } });
     if (!sprint) throw new NotFoundException(`Sprint ${sprintId} not found`);
+
+    if (sprint.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot update a completed sprint');
+    }
 
     const updated = await prisma.sprint.update({
       where: { id: sprintId },
@@ -92,6 +104,14 @@ export class SprintService {
     if (!sprint) throw new NotFoundException(`Sprint ${sprintId} not found`);
     if (sprint.status !== 'PLANNED') {
       throw new BadRequestException(`Sprint is ${sprint.status}, cannot activate`);
+    }
+
+    // Only one active sprint allowed per project
+    const existing = await prisma.sprint.findFirst({
+      where: { projectId: sprint.projectId, status: 'ACTIVE' },
+    });
+    if (existing) {
+      throw new ConflictException(`Sprint ${existing.id} is already active in this project`);
     }
 
     const updated = await prisma.sprint.update({
@@ -132,7 +152,6 @@ export class SprintService {
       data: { status: 'COMPLETED' },
     });
 
-    // Publish projects.sprint.completed
     await this.producer.send({
       topic: KAFKA_TOPICS.SPRINT_COMPLETED,
       messages: [
@@ -151,6 +170,8 @@ export class SprintService {
               completedPoints,
               plannedPoints,
               velocityScore,
+              taskCount: sprint.sprintTasks.length,
+              completedTaskCount: sprint.sprintTasks.filter((st) => st.task.status === 'DONE').length,
             },
           }),
         },
@@ -164,14 +185,22 @@ export class SprintService {
   async addTaskToSprint(sprintId: string, taskId: string) {
     const sprint = await prisma.sprint.findUnique({ where: { id: sprintId } });
     if (!sprint) throw new NotFoundException(`Sprint ${sprintId} not found`);
+    if (sprint.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot add tasks to a completed sprint');
+    }
 
     const task = await prisma.task.findUnique({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Task ${taskId} not found`);
 
+    // Ensure task belongs to the same project
+    if (task.projectId !== sprint.projectId) {
+      throw new BadRequestException('Task does not belong to the sprint project');
+    }
+
     const existing = await prisma.sprintTask.findUnique({
       where: { sprintId_taskId: { sprintId, taskId } },
     });
-    if (existing) throw new BadRequestException('Task already in sprint');
+    if (existing) throw new ConflictException('Task already in sprint');
 
     return prisma.sprintTask.create({ data: { sprintId, taskId } });
   }
@@ -181,6 +210,12 @@ export class SprintService {
       where: { sprintId_taskId: { sprintId, taskId } },
     });
     if (!existing) throw new NotFoundException('Task not found in sprint');
+
+    const sprint = await prisma.sprint.findUnique({ where: { id: sprintId } });
+    if (sprint?.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot remove tasks from a completed sprint');
+    }
+
     return prisma.sprintTask.delete({ where: { sprintId_taskId: { sprintId, taskId } } });
   }
 

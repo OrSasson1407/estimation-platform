@@ -1,249 +1,209 @@
-# apps/simulation-service/src/stress_tester.py  ← UPGRADED v2
+# apps/estimation-service/src/stress_tester.py
 """
-Monte Carlo Stress Testing Engine
-Runs predefined adversarial scenarios against a project context
-and returns survival probability + delay distributions.
-
-Scenarios (per spec):
-  KEY_DEV_LEAVES        — critical developer departs mid-sprint
-  SCOPE_DOUBLES         — requirements double unexpectedly
-  THIRD_PARTY_DELAYS    — external API/vendor delayed 2-4 weeks
-  TECH_DEBT_HITS        — accumulated debt forces 2-week refactor sprint
-  TEAM_ILLNESS          — 30% of team out for 1-2 weeks
-  INFRA_OUTAGE          — production incident consumes 1 week of team capacity
-  REQUIREMENTS_CHURN    — 40% of stories revised after sprint planning
-  HOSTILE_AUDIT         — security/compliance audit mid-sprint
+Stress-test engine — wired to real sprint velocity history from PostgreSQL.
+Runs predefined adversarial scenarios against the project's actual baseline.
 """
+import uuid
+import numpy as np
+from typing import List, Dict, Any
+from dataclasses import dataclass, asdict
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Tuple
-import random, math, statistics
+from db import fetch_sprint_velocity_history, fetch_project_context, persist_simulation_result
 
-# ── Monte Carlo config ────────────────────────────────────────────────────────
-N_SIMULATIONS = 500  # iterations per scenario
-RANDOM_SEED   = 42
-
-# ── Data classes ──────────────────────────────────────────────────────────────
-@dataclass
-class StressTestResult:
-    scenario_id:              str
-    scenario_name:            str
-    description:              str
-    survival_probability:     float   # 0-1 chance project completes within +20% of baseline
-    projected_delay_days:     float   # median delay in days
-    p95_delay_days:           float   # 95th percentile delay
-    critical_path_impact:     str     # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
-    affected_risk_categories: List[str]
-    mitigation_suggestions:   List[str]
-    confidence_interval:      Dict[str, float]  # {"p10": x, "p50": y, "p90": z}
-
-# ── Scenario definitions ──────────────────────────────────────────────────────
-SCENARIOS: Dict[str, Dict] = {
-    "KEY_DEV_LEAVES": {
-        "name":        "Key Developer Departure",
-        "description": "A developer with critical code ownership leaves mid-sprint without knowledge transfer.",
-        "categories":  ["DEVELOPER_OVERLOAD", "DEPENDENCY_BOTTLENECK"],
-        "mitigations": [
-            "Enforce code review culture to distribute knowledge.",
-            "Maintain up-to-date runbooks and architecture decision records.",
-            "Cross-train at least two developers on all critical modules.",
-        ],
-        # Stochastic parameters (mean, std_dev) for delay days
-        "delay_mean":  18.0,
-        "delay_std":    8.0,
-        "velocity_loss": (0.15, 0.35),  # (min, max) fraction of velocity lost
+SCENARIOS: Dict[str, Dict[str, Any]] = {
+    "lose_lead_dev": {
+        "name": "Lead Developer Departure",
+        "description": "The lead developer leaves mid-project",
+        "velocity_multiplier": 0.45,
+        "scope_delta": 0.0,
+        "lost_days": 0,
+        "risk_categories": ["DEPENDENCY_BOTTLENECK", "BURNOUT_RISK"],
     },
-    "SCOPE_DOUBLES": {
-        "name":        "Scope Doubles",
-        "description": "Feature requirements unexpectedly double in size due to stakeholder expansion.",
-        "categories":  ["SCOPE_CREEP", "UNCLEAR_REQUIREMENTS"],
-        "mitigations": [
-            "Implement formal scope change approval with impact analysis.",
-            "Freeze scope at sprint planning; changes enter next sprint backlog.",
-            "Define an explicit MVP boundary and enforce it with stakeholders.",
-        ],
-        "delay_mean":  40.0,
-        "delay_std":   12.0,
-        "velocity_loss": (0.0, 0.1),
+    "scope_creep_30": {
+        "name": "30% Scope Increase",
+        "description": "Product scope expands by 30% during sprint 3",
+        "velocity_multiplier": 1.0,
+        "scope_delta": 0.30,
+        "lost_days": 0,
+        "risk_categories": ["SCOPE_CREEP", "DEVELOPER_OVERLOAD"],
     },
-    "THIRD_PARTY_DELAYS": {
-        "name":        "Third-Party / Vendor Delays",
-        "description": "An external API, vendor deliverable, or integration partner is delayed 2-4 weeks.",
-        "categories":  ["EXTERNAL_DEPENDENCY", "DEPENDENCY_BOTTLENECK"],
-        "mitigations": [
-            "Build mock/stub versions of all third-party dependencies.",
-            "Establish SLA with vendors and escalation paths.",
-            "Re-sequence sprint work to defer blocked items.",
-        ],
-        "delay_mean":  14.0,
-        "delay_std":    5.0,
-        "velocity_loss": (0.1, 0.25),
+    "key_infra_outage": {
+        "name": "Critical Infrastructure Outage",
+        "description": "Primary database unavailable for 3 days",
+        "velocity_multiplier": 0.0,
+        "scope_delta": 0.0,
+        "lost_days": 3,
+        "risk_categories": ["EXTERNAL_DEPENDENCY"],
     },
-    "TECH_DEBT_HITS": {
-        "name":        "Technical Debt Crisis",
-        "description": "Accumulated technical debt forces an emergency refactoring sprint before progress can continue.",
-        "categories":  ["ANOMALY", "UNCLEAR_REQUIREMENTS"],
-        "mitigations": [
-            "Allocate 20% of sprint capacity to debt reduction continuously.",
-            "Track SonarQube sqale_index trend; alert when growing >5% weekly.",
-            "Schedule a dedicated tech debt sprint every quarter.",
-        ],
-        "delay_mean":  12.0,
-        "delay_std":    4.0,
-        "velocity_loss": (0.2, 0.4),
+    "team_burnout": {
+        "name": "Team Burnout Event",
+        "description": "70% of team operates at 60% capacity for 2 sprints",
+        "velocity_multiplier": 0.60,
+        "scope_delta": 0.0,
+        "lost_days": 0,
+        "affected_sprints": 2,
+        "risk_categories": ["BURNOUT_RISK", "DEVELOPER_OVERLOAD"],
     },
-    "TEAM_ILLNESS": {
-        "name":        "Team Illness (30% Capacity Loss)",
-        "description": "30% of the team is unavailable for 1-2 weeks due to illness.",
-        "categories":  ["DEVELOPER_OVERLOAD"],
-        "mitigations": [
-            "Ensure no single developer is the sole owner of any critical path item.",
-            "Maintain a 15% sprint buffer for unplanned capacity loss.",
-            "Document runbooks for all on-call and deployment procedures.",
-        ],
-        "delay_mean":   7.0,
-        "delay_std":    3.0,
-        "velocity_loss": (0.25, 0.35),
-    },
-    "INFRA_OUTAGE": {
-        "name":        "Production Infrastructure Outage",
-        "description": "A production incident consumes the equivalent of one week of team engineering capacity.",
-        "categories":  ["ANOMALY"],
-        "mitigations": [
-            "Implement chaos engineering to pre-discover failure modes.",
-            "Maintain a dedicated on-call rotation separate from sprint team.",
-            "Automate incident response runbooks to reduce MTTR.",
-        ],
-        "delay_mean":   5.0,
-        "delay_std":    2.5,
-        "velocity_loss": (0.15, 0.30),
-    },
-    "REQUIREMENTS_CHURN": {
-        "name":        "Requirements Churn (40% Revision)",
-        "description": "40% of sprint stories are revised or invalidated after sprint planning due to changing product direction.",
-        "categories":  ["UNCLEAR_REQUIREMENTS", "SCOPE_CREEP"],
-        "mitigations": [
-            "Establish a definition-of-ready checklist before stories enter sprint.",
-            "Require product owner sign-off 3 business days before sprint start.",
-            "Lock sprint scope at planning; all changes go to next sprint.",
-        ],
-        "delay_mean":  20.0,
-        "delay_std":    7.0,
-        "velocity_loss": (0.35, 0.50),
-    },
-    "HOSTILE_AUDIT": {
-        "name":        "Security / Compliance Audit",
-        "description": "An unplanned security or compliance audit interrupts mid-sprint, consuming 1 week of senior engineer time.",
-        "categories":  ["EXTERNAL_DEPENDENCY"],
-        "mitigations": [
-            "Run quarterly internal security audits to stay audit-ready.",
-            "Maintain living compliance documentation (SOC2, ISO 27001).",
-            "Designate a compliance champion per team to handle audit requests.",
-        ],
-        "delay_mean":   6.0,
-        "delay_std":    2.0,
-        "velocity_loss": (0.10, 0.25),
+    "external_api_delay": {
+        "name": "Third-party API Integration Delay",
+        "description": "Critical external API unavailable for 1 sprint",
+        "velocity_multiplier": 0.75,
+        "scope_delta": 0.0,
+        "lost_days": 0,
+        "blocked_sprints": 1,
+        "risk_categories": ["EXTERNAL_DEPENDENCY", "DEPENDENCY_BOTTLENECK"],
     },
 }
 
-# ── Monte Carlo runner ────────────────────────────────────────────────────────
-def _run_monte_carlo(
-    scenario: Dict,
-    baseline_days: float,
-    team_size: int,
-    rng: random.Random,
-) -> List[float]:
-    """
-    Run N_SIMULATIONS iterations, returning a list of delay_days per run.
-    Each run samples from the scenario's stochastic parameters.
-    """
-    delays = []
-    v_min, v_max = scenario["velocity_loss"]
 
-    for _ in range(N_SIMULATIONS):
-        # Sample delay from normal distribution, clipped at 0
-        raw_delay    = rng.gauss(scenario["delay_mean"], scenario["delay_std"])
-        delay        = max(0.0, raw_delay)
+@dataclass
+class StressTestReport:
+    scenario_id: str
+    scenario_name: str
+    description: str
+    survival_probability: float
+    projected_delay_days: float
+    critical_path_impact: str
+    affected_risk_categories: List[str]
+    mitigation_suggestions: List[str]
+    confidence_interval: Dict[str, float]
+    baseline_velocity: float
+    historical_sprints_used: int
 
-        # Additional velocity-loss compound effect
-        vel_loss     = rng.uniform(v_min, v_max)
-        compound_ext = baseline_days * vel_loss * rng.uniform(0.5, 1.0)
-        total_delay  = delay + compound_ext
 
-        # Team size amplifier: larger teams have more coordination overhead under stress
-        team_factor  = 1.0 + max(0, (team_size - 5)) * 0.02
-        delays.append(total_delay * team_factor)
-
-    return delays
-
-def _survival_probability(delays: List[float], baseline_days: float, threshold: float = 0.20) -> float:
-    """Fraction of simulations where total delay ≤ threshold × baseline."""
-    max_acceptable = baseline_days * threshold
-    surviving      = sum(1 for d in delays if d <= max_acceptable)
-    return round(surviving / len(delays), 3)
-
-def _critical_path_impact(median_delay: float, baseline_days: float) -> str:
-    ratio = median_delay / max(1, baseline_days)
-    if ratio < 0.10: return "LOW"
-    if ratio < 0.25: return "MEDIUM"
-    if ratio < 0.50: return "HIGH"
-    return "CRITICAL"
-
-# ── Main entry point ──────────────────────────────────────────────────────────
-def run_stress_test(
+async def run_stress_test(
+    project_id: str,
     scenario_ids: List[str],
-    ctx: Dict[str, Any],
-) -> List[StressTestResult]:
+    simulation_id: str | None = None,
+    context_override: Dict[str, Any] | None = None,
+) -> List[StressTestReport]:
     """
-    Run stress-test simulations for the requested scenario IDs.
-    Returns one StressTestResult per scenario.
-    Unknown scenario IDs are silently skipped.
+    Fetches real sprint velocity history from PostgreSQL, runs each
+    scenario as a Monte Carlo stress test, persists results.
     """
-    baseline_days = float(ctx.get("baseline_days", 60))
-    team_size     = int(ctx.get("team_size", 5))
-    rng           = random.Random(RANDOM_SEED)
+    simulation_id = simulation_id or f"stress_{uuid.uuid4().hex[:12]}"
 
-    results = []
+    # ── Real DB context ────────────────────────────────────────────────────────
+    context = context_override or await fetch_project_context(project_id)
+    history = await fetch_sprint_velocity_history(project_id, limit=10)
+
+    # Use historical completed_points as velocity baseline if available
+    historical_velocities = [float(h["completed_points"]) for h in history if h["completed_points"] > 0]
+    baseline_velocity = (
+        float(np.mean(historical_velocities))
+        if historical_velocities
+        else float(context.get("current_velocity", 32.0))
+    )
+
+    remaining_points = float(context.get("remaining_points", 100))
+
+    reports: List[StressTestReport] = []
     for sid in scenario_ids:
-        scenario = SCENARIOS.get(sid.upper())
+        scenario = SCENARIOS.get(sid)
         if not scenario:
             continue
+        report = _evaluate_scenario(
+            sid, scenario, remaining_points, baseline_velocity, len(historical_velocities)
+        )
+        reports.append(report)
 
-        delays      = _run_monte_carlo(scenario, baseline_days, team_size, rng)
-        sorted_d    = sorted(delays)
-        n           = len(sorted_d)
+    # Persist combined result
+    await persist_simulation_result(
+        simulation_id=simulation_id,
+        project_id=project_id,
+        simulation_type="STRESS_TEST",
+        input_payload={
+            "scenario_ids": scenario_ids,
+            "baseline_velocity": baseline_velocity,
+            "historical_sprints_used": len(historical_velocities),
+            "remaining_points": remaining_points,
+        },
+        result_payload={"reports": [asdict(r) for r in reports]},
+    )
 
-        p10 = sorted_d[int(n * 0.10)]
-        p50 = sorted_d[int(n * 0.50)]
-        p90 = sorted_d[int(n * 0.90)]
-        p95 = sorted_d[int(n * 0.95)]
+    return reports
 
-        survival = _survival_probability(delays, baseline_days)
-        median   = round(statistics.median(delays), 1)
 
-        results.append(StressTestResult(
-            scenario_id              = sid,
-            scenario_name            = scenario["name"],
-            description              = scenario["description"],
-            survival_probability     = survival,
-            projected_delay_days     = median,
-            p95_delay_days           = round(p95, 1),
-            critical_path_impact     = _critical_path_impact(median, baseline_days),
-            affected_risk_categories = scenario["categories"],
-            mitigation_suggestions   = scenario["mitigations"],
-            confidence_interval      = {
-                "p10": round(p10, 1),
-                "p50": round(p50, 1),
-                "p90": round(p90, 1),
-            },
-        ))
+def _evaluate_scenario(
+    scenario_id: str,
+    scenario: Dict[str, Any],
+    remaining_points: float,
+    baseline_velocity: float,
+    historical_sprints_used: int,
+) -> StressTestReport:
+    sprint_days = 14
+    vm          = float(scenario.get("velocity_multiplier", 1.0))
+    scope_d     = float(scenario.get("scope_delta", 0.0))
+    lost_d      = float(scenario.get("lost_days", 0))
 
-    return results
+    adjusted_velocity = max(0.1, baseline_velocity * vm)
+    adjusted_points   = remaining_points * (1.0 + scope_d)
 
-# ── Expose scenario catalogue ─────────────────────────────────────────────────
-def list_scenarios() -> List[Dict]:
-    return [
-        {"id": k, "name": v["name"], "description": v["description"],
-         "categories": v["categories"]}
-        for k, v in SCENARIOS.items()
-    ]
+    # Monte Carlo under stress: 2 000 runs with 12% velocity noise
+    n          = 2_000
+    v_noise    = np.random.normal(adjusted_velocity, adjusted_velocity * 0.12, n)
+    v_noise    = np.maximum(v_noise, 0.1)
+    durations  = (adjusted_points / v_noise) * sprint_days + lost_d
+
+    p50 = float(np.percentile(durations, 50))
+    p80 = float(np.percentile(durations, 80))
+    p95 = float(np.percentile(durations, 95))
+
+    baseline_duration = (remaining_points / baseline_velocity) * sprint_days if baseline_velocity > 0 else 999.0
+    delay             = p50 - baseline_duration
+
+    # Survival = P(completes within 20% buffer of baseline)
+    buffer_days   = baseline_duration * 1.20
+    survival_prob = float(np.mean(durations <= buffer_days))
+
+    critical_impact = (
+        "CRITICAL" if survival_prob < 0.50 else
+        "HIGH"     if survival_prob < 0.70 else
+        "MODERATE" if survival_prob < 0.85 else
+        "LOW"
+    )
+
+    return StressTestReport(
+        scenario_id=scenario_id,
+        scenario_name=scenario["name"],
+        description=scenario["description"],
+        survival_probability=round(survival_prob, 3),
+        projected_delay_days=round(delay, 1),
+        critical_path_impact=critical_impact,
+        affected_risk_categories=scenario.get("risk_categories", []),
+        mitigation_suggestions=_get_mitigations(scenario_id),
+        confidence_interval={"p50": round(p50, 1), "p80": round(p80, 1), "p95": round(p95, 1)},
+        baseline_velocity=round(baseline_velocity, 2),
+        historical_sprints_used=historical_sprints_used,
+    )
+
+
+def _get_mitigations(scenario_id: str) -> List[str]:
+    m = {
+        "lose_lead_dev": [
+            "Implement pair programming and cross-training immediately",
+            "Document all tribal knowledge in the next sprint",
+            "Identify and onboard a backup lead candidate",
+        ],
+        "scope_creep_30": [
+            "Freeze scope and escalate to product management",
+            "Move new requirements to next release milestone",
+            "Re-estimate affected tasks with updated story points",
+        ],
+        "key_infra_outage": [
+            "Configure automated failover to secondary region",
+            "Maintain offline development mode for all critical services",
+            "Test DR runbook this sprint",
+        ],
+        "team_burnout": [
+            "Reduce sprint velocity targets by 25% for recovery period",
+            "Cancel all non-critical meetings for 2 weeks",
+            "Conduct 1:1s and redistribute highest-complexity tasks",
+        ],
+        "external_api_delay": [
+            "Build mock server for the external API immediately",
+            "Negotiate SLA with third-party provider",
+            "De-couple dependent tasks and advance independent work",
+        ],
+    }
+    return m.get(scenario_id, ["Review the scenario and plan accordingly"])

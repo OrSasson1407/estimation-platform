@@ -1,5 +1,10 @@
-// apps/project-service/src/project-service.service.ts  ← PHASE 1 UPGRADE
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+// apps/project-service/src/project-service.service.ts
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { prisma } from '@estimation/database';
 import { createLogger } from '@estimation/logger';
 import { KAFKA_TOPICS } from '@estimation/events';
@@ -19,6 +24,14 @@ export const CreateProjectSchema = z.object({
   targetDate: z.string().datetime().optional(),
 });
 
+export const UpdateProjectSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().optional(),
+  teamId: z.string().optional(),
+  startDate: z.string().datetime().optional(),
+  targetDate: z.string().datetime().optional(),
+});
+
 export const CreateTaskSchema = z.object({
   externalId: z.string().min(1),
   title: z.string().min(1).max(255),
@@ -33,9 +46,22 @@ export const UpdateTaskStatusSchema = z.object({
   changedBy: z.string(),
 });
 
+export const CreateTeamSchema = z.object({
+  name: z.string().min(1).max(100),
+  orgId: z.string().min(1),
+});
+
+export const AddTeamMemberSchema = z.object({
+  developerId: z.string().min(1),
+  role: z.enum(['DEVELOPER', 'LEAD', 'MANAGER', 'QA', 'DESIGNER']).default('DEVELOPER'),
+});
+
 export type CreateProjectDto = z.infer<typeof CreateProjectSchema>;
+export type UpdateProjectDto = z.infer<typeof UpdateProjectSchema>;
 export type CreateTaskDto = z.infer<typeof CreateTaskSchema>;
 export type UpdateTaskStatusDto = z.infer<typeof UpdateTaskStatusSchema>;
+export type CreateTeamDto = z.infer<typeof CreateTeamSchema>;
+export type AddTeamMemberDto = z.infer<typeof AddTeamMemberSchema>;
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -44,12 +70,16 @@ export class ProjectService {
   private producer: Producer;
 
   constructor() {
-    const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] });
+    const kafka = new Kafka({
+      clientId: 'project-service',
+      brokers: [(process.env.KAFKA_BROKER || 'localhost:9092')],
+    });
     this.producer = kafka.producer();
   }
 
   async onModuleInit() {
     await this.producer.connect();
+    logger.info('Kafka producer connected');
   }
 
   async onModuleDestroy() {
@@ -75,6 +105,24 @@ export class ProjectService {
     return project;
   }
 
+  async listProjects(orgId: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const [items, total] = await Promise.all([
+      prisma.project.findMany({
+        where: { orgId, status: { not: 'CANCELLED' } },
+        include: {
+          team: { select: { id: true, name: true } },
+          _count: { select: { tasks: true, sprints: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.project.count({ where: { orgId, status: { not: 'CANCELLED' } } }),
+    ]);
+    return { items, total, page, limit };
+  }
+
   async getProjectDetails(projectId: string) {
     const project = await prisma.project.findUnique({
       where: { id: projectId },
@@ -91,9 +139,27 @@ export class ProjectService {
     });
 
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
-
     logger.info({ projectId }, 'project_fetched');
     return project;
+  }
+
+  async updateProject(projectId: string, dto: UpdateProjectDto, userId: string) {
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException(`Project ${projectId} not found`);
+
+    const updated = await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        ...(dto.name && { name: dto.name }),
+        ...(dto.description !== undefined && { description: dto.description }),
+        ...(dto.teamId !== undefined && { teamId: dto.teamId }),
+        ...(dto.startDate && { startDate: new Date(dto.startDate) }),
+        ...(dto.targetDate && { targetDate: new Date(dto.targetDate) }),
+      },
+    });
+
+    logger.info({ projectId, updatedBy: userId }, 'project_updated');
+    return updated;
   }
 
   async archiveProject(projectId: string, userId: string) {
@@ -107,6 +173,66 @@ export class ProjectService {
 
     logger.info({ projectId, archivedBy: userId }, 'project_archived');
     return updated;
+  }
+
+  // ── Team management ────────────────────────────────────────────────────────
+
+  async createTeam(dto: CreateTeamDto, userId: string) {
+    const team = await prisma.team.create({
+      data: { name: dto.name, orgId: dto.orgId },
+    });
+    logger.info({ teamId: team.id, orgId: dto.orgId, createdBy: userId }, 'team_created');
+    return team;
+  }
+
+  async getTeam(teamId: string) {
+    const team = await prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        members: {
+          include: {
+            developer: { select: { id: true, name: true, role: true, email: true } },
+          },
+        },
+        _count: { select: { projects: true } },
+      },
+    });
+    if (!team) throw new NotFoundException(`Team ${teamId} not found`);
+    return team;
+  }
+
+  async addTeamMember(teamId: string, dto: AddTeamMemberDto) {
+    const team = await prisma.team.findUnique({ where: { id: teamId } });
+    if (!team) throw new NotFoundException(`Team ${teamId} not found`);
+
+    const developer = await prisma.developer.findUnique({ where: { id: dto.developerId } });
+    if (!developer) throw new NotFoundException(`Developer ${dto.developerId} not found`);
+
+    const existing = await prisma.teamMember.findUnique({
+      where: { teamId_developerId: { teamId, developerId: dto.developerId } },
+    });
+    if (existing) throw new ConflictException('Developer is already a member of this team');
+
+    const member = await prisma.teamMember.create({
+      data: { teamId, developerId: dto.developerId, role: dto.role },
+      include: { developer: { select: { id: true, name: true, role: true } } },
+    });
+
+    logger.info({ teamId, developerId: dto.developerId }, 'team_member_added');
+    return member;
+  }
+
+  async removeTeamMember(teamId: string, developerId: string) {
+    const existing = await prisma.teamMember.findUnique({
+      where: { teamId_developerId: { teamId, developerId } },
+    });
+    if (!existing) throw new NotFoundException('Team member not found');
+
+    await prisma.teamMember.delete({
+      where: { teamId_developerId: { teamId, developerId } },
+    });
+
+    logger.info({ teamId, developerId }, 'team_member_removed');
   }
 
   // ── Tasks ──────────────────────────────────────────────────────────────────
@@ -135,7 +261,6 @@ export class ProjectService {
   async createTask(projectId: string, dto: CreateTaskDto, userId: string) {
     await this.getProjectDetails(projectId);
 
-    // Guard: parent task must belong to same project
     if (dto.parentTaskId) {
       const parent = await prisma.task.findUnique({ where: { id: dto.parentTaskId } });
       if (!parent || parent.projectId !== projectId) {
@@ -158,7 +283,6 @@ export class ProjectService {
       },
     });
 
-    // Publish projects.task.created → triggers estimation-service
     await this.producer.send({
       topic: KAFKA_TOPICS.TASK_CREATED,
       messages: [
@@ -244,7 +368,7 @@ export class ProjectService {
     const existing = await prisma.taskDependency.findUnique({
       where: { blockingTaskId_blockedTaskId: { blockingTaskId, blockedTaskId } },
     });
-    if (existing) throw new BadRequestException('Dependency already exists');
+    if (existing) throw new ConflictException('Dependency already exists');
 
     const dep = await prisma.taskDependency.create({ data: { blockingTaskId, blockedTaskId } });
     logger.info({ blockingTaskId, blockedTaskId }, 'task_dependency_added');
@@ -286,12 +410,9 @@ export class ProjectService {
 
   async getProjectSprints(projectId: string) {
     await this.getProjectDetails(projectId);
-
     return prisma.sprint.findMany({
       where: { projectId },
-      include: {
-        _count: { select: { sprintTasks: true } },
-      },
+      include: { _count: { select: { sprintTasks: true } } },
       orderBy: { startDate: 'desc' },
     });
   }

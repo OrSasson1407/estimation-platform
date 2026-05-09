@@ -1,324 +1,216 @@
-# apps/simulation-service/src/what_if_engine.py  ← UPGRADED v2
+# apps/estimation-service/src/what_if_engine.py
 """
-What-If Simulation Engine
-Computes timeline, cost, and risk deltas for hypothetical project changes.
-
-Supported change types (per spec):
-  ADD_DEVELOPER     — adds capacity to the team
-  REMOVE_DEVELOPER  — removes a developer, redistributes load
-  CHANGE_SCOPE      — adds/removes story points
-  CHANGE_DEADLINE   — shifts target end date
+Monte Carlo what-if engine — wired to real DB context via db.py.
+Scenarios: ADD_DEVELOPER | REMOVE_DEVELOPER | CHANGE_SCOPE | CHANGE_DEADLINE
 """
-
-from dataclasses import dataclass, field
+import uuid
+import numpy as np
 from typing import List, Dict, Any
-import math, uuid
+from dataclasses import dataclass, asdict
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-HOURS_PER_DEV_DAY         = 6.0   # effective productive hours per day
-STORY_POINTS_PER_DEV_DAY  = 1.2   # average points delivered per dev per day
-COST_PER_DEV_DAY_USD      = 800.0 # blended daily rate
-OVERHEAD_FACTOR           = 1.15  # 15% coordination overhead per extra developer
-ONBOARDING_DAYS           = 5     # ramp-up cost when adding a developer
-CONFIDENCE_BASE           = 0.85
+from db import fetch_project_context, persist_simulation_result
 
-# Supported change-type keys
-ADD_DEVELOPER    = "ADD_DEVELOPER"
-REMOVE_DEVELOPER = "REMOVE_DEVELOPER"
-CHANGE_SCOPE     = "CHANGE_SCOPE"
-CHANGE_DEADLINE  = "CHANGE_DEADLINE"
+DEFAULT_VELOCITY_PTS_PER_DEV_PER_SPRINT = 8.0
+DEFAULT_SPRINT_DAYS = 14
+DEFAULT_DAILY_RATE_USD = 600.0
 
-# ── Data classes ──────────────────────────────────────────────────────────────
+
 @dataclass
 class SimulationChange:
-    type:    str
+    type: str   # ADD_DEVELOPER | REMOVE_DEVELOPER | CHANGE_SCOPE | CHANGE_DEADLINE
     payload: Dict[str, Any]
 
-@dataclass
-class ChangeImpact:
-    changeType:      str
-    summary:         str
-    timelineDelta:   float  # days, signed
-    costDelta:       float  # USD, signed
-    riskDelta:       float  # -1 to +1, signed
 
 @dataclass
 class WhatIfResult:
-    simulation_id:      str
-    project_id:         str
-    baseline_days:      float
-    projected_days:     float
+    simulation_id: str
+    project_id: str
+    baseline_days: float
+    projected_days: float
+    p80_days: float
     timeline_delta_days: float
     timeline_delta_pct: float
-    cost_delta_usd:     float
-    risk_delta:         float
-    confidence:         float
+    cost_delta_usd: float
+    risk_delta: str
     bottleneck_warnings: List[str]
-    change_impacts:     List[Dict]
-
-# ── Project context defaults (overridden by ctx dict from caller) ─────────────
-DEFAULT_CTX = {
-    "team_size":      5,
-    "total_points":   80,
-    "velocity_ppts":  10,   # team story points per sprint (2-week sprint)
-    "sprint_days":    10,
-    "budget_usd":     200_000,
-    "risk_score":     0.3,  # 0-1
-}
-
-def _merge_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    return {**DEFAULT_CTX, **ctx}
-
-# ── Baseline computation ──────────────────────────────────────────────────────
-def _baseline_days(ctx: Dict) -> float:
-    """Remaining project duration from context."""
-    sprints_needed = ctx["total_points"] / ctx["velocity_ppts"]
-    return round(sprints_needed * ctx["sprint_days"], 1)
-
-def _baseline_cost(ctx: Dict) -> float:
-    days = _baseline_days(ctx)
-    return round(days * ctx["team_size"] * COST_PER_DEV_DAY_USD, 2)
-
-# ── Change handlers ───────────────────────────────────────────────────────────
-def _apply_add_developer(
-    ctx: Dict, payload: Dict
-) -> tuple[float, float, float, str, List[str]]:
-    """
-    Adding a developer increases velocity but has diminishing returns
-    (Brooks's Law: overhead grows as n*(n-1)/2 communication links).
-    Returns: (timeline_delta_days, cost_delta_usd, risk_delta, summary, warnings)
-    """
-    count       = int(payload.get("count", 1))
-    skill_match = float(payload.get("skill_match", 0.7))  # 0-1
-
-    current_size     = ctx["team_size"]
-    new_size         = current_size + count
-    overhead_penalty = 1 + (new_size - current_size) * 0.05  # 5% overhead per extra person
-
-    # Effective velocity gain, discounted by skill match and Brooks's Law
-    velocity_gain   = count * STORY_POINTS_PER_DEV_DAY * ctx["sprint_days"] * skill_match / overhead_penalty
-    new_velocity    = ctx["velocity_ppts"] + velocity_gain
-
-    old_days        = _baseline_days(ctx)
-    new_sprints     = ctx["total_points"] / new_velocity
-    new_days        = new_sprints * ctx["sprint_days"] + ONBOARDING_DAYS
-    timeline_delta  = round(new_days - old_days, 1)
-
-    # Cost: new headcount for remaining duration + onboarding
-    remaining_days  = max(0, old_days + timeline_delta)
-    cost_delta      = round(
-        count * remaining_days * COST_PER_DEV_DAY_USD + count * ONBOARDING_DAYS * COST_PER_DEV_DAY_USD,
-        2,
-    )
-
-    # Risk: generally decreases (more capacity) unless team already large
-    risk_delta = -0.05 * count * skill_match if new_size <= 8 else +0.03 * count
-
-    warnings = []
-    if new_size > 8:
-        warnings.append(f"Team size {new_size} exceeds optimal threshold (8). "
-                        "Brooks's Law: coordination overhead will increase significantly.")
-    if skill_match < 0.5:
-        warnings.append("Low skill match (<50%) — onboarding cost likely underestimated.")
-
-    summary = (
-        f"Adding {count} developer(s) (skill match {skill_match*100:.0f}%) "
-        f"reduces timeline by {abs(timeline_delta):.1f}d but adds "
-        f"${cost_delta:,.0f} and {ONBOARDING_DAYS}d ramp-up."
-    )
-    return timeline_delta, cost_delta, round(risk_delta, 3), summary, warnings
+    confidence: float
+    change_impacts: List[Dict[str, Any]]
 
 
-def _apply_remove_developer(
-    ctx: Dict, payload: Dict
-) -> tuple[float, float, float, str, List[str]]:
-    """
-    Removing a developer reduces velocity. If the dev is a code owner,
-    risk increases significantly.
-    """
-    count        = int(payload.get("count", 1))
-    is_code_owner = bool(payload.get("is_code_owner", False))
-    current_size  = ctx["team_size"]
-
-    if count >= current_size:
-        count = current_size - 1  # can't remove everyone
-
-    velocity_loss  = count * STORY_POINTS_PER_DEV_DAY * ctx["sprint_days"]
-    new_velocity   = max(1.0, ctx["velocity_ppts"] - velocity_loss)
-    old_days       = _baseline_days(ctx)
-    new_sprints    = ctx["total_points"] / new_velocity
-    new_days       = new_sprints * ctx["sprint_days"]
-    timeline_delta = round(new_days - old_days, 1)
-
-    # Cost savings
-    remaining_days = old_days  # we save over original duration
-    cost_delta     = round(-count * remaining_days * COST_PER_DEV_DAY_USD, 2)
-
-    risk_delta  = 0.08 * count
-    if is_code_owner:
-        risk_delta += 0.15  # knowledge concentration risk
-
-    warnings = []
-    if is_code_owner:
-        warnings.append("Removing a code owner creates a single-point-of-failure risk. "
-                        "Ensure knowledge transfer before departure.")
-    if new_velocity < ctx["velocity_ppts"] * 0.6:
-        warnings.append("Velocity drops below 60% of baseline — sprint commitments will likely be missed.")
-
-    summary = (
-        f"Removing {count} developer(s) extends timeline by {timeline_delta:.1f}d "
-        f"but saves ${abs(cost_delta):,.0f}."
-    )
-    return timeline_delta, cost_delta, round(risk_delta, 3), summary, warnings
-
-
-def _apply_change_scope(
-    ctx: Dict, payload: Dict
-) -> tuple[float, float, float, str, List[str]]:
-    """
-    Adding or removing story points from remaining scope.
-    delta_points: positive = scope addition (creep), negative = descope
-    """
-    delta_points = float(payload.get("delta_points", 0))
-    reason       = payload.get("reason", "unspecified")
-
-    new_points     = max(0, ctx["total_points"] + delta_points)
-    old_days       = _baseline_days(ctx)
-    new_sprints    = new_points / ctx["velocity_ppts"]
-    new_days       = new_sprints * ctx["sprint_days"]
-    timeline_delta = round(new_days - old_days, 1)
-    cost_delta     = round(timeline_delta * ctx["team_size"] * COST_PER_DEV_DAY_USD, 2)
-
-    risk_delta = 0.0
-    if delta_points > 0:
-        # Scope creep increases risk proportionally
-        risk_delta = min(0.3, delta_points / ctx["total_points"] * 0.5)
-
-    warnings = []
-    if delta_points > ctx["total_points"] * 0.2:
-        warnings.append(
-            f"Scope increase of {delta_points:.0f} pts is >20% of baseline — "
-            "strong indicator of requirement churn. Consider sprint replanning."
-        )
-    if delta_points < 0:
-        warnings.append(f"Descoping {abs(delta_points):.0f} pts. Ensure stakeholders have acknowledged de-prioritised features.")
-
-    summary = (
-        f"Scope {'increase' if delta_points > 0 else 'reduction'} of "
-        f"{abs(delta_points):.0f} pts ({reason}): "
-        f"{timeline_delta:+.1f}d, ${cost_delta:+,.0f}."
-    )
-    return timeline_delta, cost_delta, round(risk_delta, 3), summary, warnings
-
-
-def _apply_change_deadline(
-    ctx: Dict, payload: Dict
-) -> tuple[float, float, float, str, List[str]]:
-    """
-    Shifting the target deadline affects risk (crunch) and may require hiring.
-    delta_days: negative = earlier deadline (crunch), positive = extension
-    """
-    delta_days   = float(payload.get("delta_days", 0))
-    baseline     = _baseline_days(ctx)
-    new_deadline = baseline + delta_days
-    cost_delta   = 0.0
-    risk_delta   = 0.0
-
-    warnings = []
-    if delta_days < 0:
-        # Crunch: need to either reduce scope or add devs
-        crunch_ratio = abs(delta_days) / baseline
-        risk_delta   = min(0.4, crunch_ratio * 0.6)
-        if crunch_ratio > 0.2:
-            cost_delta = abs(delta_days) * ctx["team_size"] * COST_PER_DEV_DAY_USD * 0.3  # overtime premium
-            warnings.append(
-                f"Deadline moved {abs(delta_days):.0f}d earlier — team will likely need overtime "
-                f"or scope must be cut by ~{crunch_ratio*100:.0f}%."
-            )
-        if crunch_ratio > 0.4:
-            warnings.append("Deadline compression >40% is a strong burnout risk indicator.")
-    else:
-        risk_delta = -0.05  # extension reduces delivery pressure
-
-    summary = (
-        f"Deadline {'brought forward' if delta_days < 0 else 'extended'} by "
-        f"{abs(delta_days):.0f}d. Risk delta: {risk_delta:+.2f}."
-    )
-    return delta_days, cost_delta, round(risk_delta, 3), summary, warnings
-
-
-# ── Main entry point ──────────────────────────────────────────────────────────
-def run_what_if(
+async def run_what_if(
     project_id: str,
-    simulation_id: str,
     changes: List[SimulationChange],
-    ctx: Dict[str, Any],
+    simulation_id: str | None = None,
+    context_override: Dict[str, Any] | None = None,
 ) -> WhatIfResult:
     """
-    Apply all changes sequentially, accumulating deltas.
-    Each change sees the mutated context from previous changes.
+    Fetches live project context from PostgreSQL, runs Monte Carlo
+    what-if simulation, persists result, returns WhatIfResult.
     """
-    ctx             = _merge_ctx(ctx)
-    baseline_days   = _baseline_days(ctx)
-    baseline_cost   = _baseline_cost(ctx)
+    simulation_id = simulation_id or f"sim_{uuid.uuid4().hex[:12]}"
 
-    total_timeline  = 0.0
-    total_cost      = 0.0
-    total_risk      = 0.0
-    all_warnings    = []
-    change_impacts  = []
+    # ── Real DB context (or override for unit tests) ──────────────────────────
+    context = context_override or await fetch_project_context(project_id)
+
+    remaining_points = float(context.get("remaining_points", 100))
+    team_size        = int(context.get("team_size", 4))
+    velocity         = float(context.get("current_velocity", DEFAULT_VELOCITY_PTS_PER_DEV_PER_SPRINT * team_size))
+    daily_rate       = float(context.get("daily_rate_usd", DEFAULT_DAILY_RATE_USD))
+
+    baseline_days = _compute_duration(remaining_points, velocity)
+
+    # Apply each change delta
+    adjusted_points   = remaining_points
+    adjusted_team     = team_size
+    adjusted_velocity = velocity
+    bottlenecks: List[str] = []
+    change_impacts: List[Dict[str, Any]] = []
 
     for change in changes:
-        ctype = change.type.upper()
+        impact = _apply_change(change, adjusted_points, adjusted_team, adjusted_velocity, daily_rate)
+        adjusted_points   += impact["delta_points"]
+        adjusted_team     += impact["delta_team"]
+        adjusted_velocity  = max(0.1, adjusted_velocity + impact["delta_velocity"])
+        if impact.get("bottleneck"):
+            bottlenecks.append(impact["bottleneck"])
+        change_impacts.append(impact)
 
-        if ctype == ADD_DEVELOPER:
-            td, cd, rd, summary, warns = _apply_add_developer(ctx, change.payload)
-        elif ctype == REMOVE_DEVELOPER:
-            td, cd, rd, summary, warns = _apply_remove_developer(ctx, change.payload)
-        elif ctype == CHANGE_SCOPE:
-            td, cd, rd, summary, warns = _apply_change_scope(ctx, change.payload)
-        elif ctype == CHANGE_DEADLINE:
-            td, cd, rd, summary, warns = _apply_change_deadline(ctx, change.payload)
-        else:
-            td, cd, rd, summary, warns = 0.0, 0.0, 0.0, f"Unknown change type: {ctype}", []
+    # Monte Carlo: 2 000 runs
+    durations    = _monte_carlo(adjusted_points, adjusted_velocity, n=2_000)
+    projected    = float(np.percentile(durations, 50))
+    p80_days     = float(np.percentile(durations, 80))
+    delta_days   = projected - baseline_days
+    delta_cost   = delta_days * adjusted_team * daily_rate
+    confidence   = max(0.40, min(0.95, 1.0 - (np.std(durations) / max(projected, 1)) * 2))
 
-        total_timeline += td
-        total_cost     += cd
-        total_risk     += rd
-        all_warnings.extend(warns)
-
-        change_impacts.append(ChangeImpact(
-            changeType=ctype, summary=summary,
-            timelineDelta=td, costDelta=cd, riskDelta=rd,
-        ).__dict__)
-
-        # Mutate context for next change
-        if ctype == ADD_DEVELOPER:
-            ctx["team_size"]    += change.payload.get("count", 1)
-        elif ctype == REMOVE_DEVELOPER:
-            ctx["team_size"]     = max(1, ctx["team_size"] - change.payload.get("count", 1))
-        elif ctype == CHANGE_SCOPE:
-            ctx["total_points"]  = max(0, ctx["total_points"] + change.payload.get("delta_points", 0))
-
-    projected_days = round(baseline_days + total_timeline, 1)
-    timeline_pct   = round((total_timeline / baseline_days) * 100, 1) if baseline_days > 0 else 0.0
-
-    # Confidence degrades with more simultaneous changes and high risk delta
-    confidence = round(
-        max(0.3, CONFIDENCE_BASE - len(changes) * 0.03 - abs(total_risk) * 0.1),
-        3,
+    result = WhatIfResult(
+        simulation_id=simulation_id,
+        project_id=project_id,
+        baseline_days=round(baseline_days, 1),
+        projected_days=round(projected, 1),
+        p80_days=round(p80_days, 1),
+        timeline_delta_days=round(delta_days, 1),
+        timeline_delta_pct=round((delta_days / max(baseline_days, 1)) * 100, 1),
+        cost_delta_usd=round(delta_cost, 2),
+        risk_delta=_classify_risk_delta(delta_days, baseline_days),
+        bottleneck_warnings=bottlenecks,
+        confidence=round(confidence, 3),
+        change_impacts=change_impacts,
     )
 
-    return WhatIfResult(
-        simulation_id       = simulation_id,
-        project_id          = project_id,
-        baseline_days       = baseline_days,
-        projected_days      = projected_days,
-        timeline_delta_days = round(total_timeline, 1),
-        timeline_delta_pct  = timeline_pct,
-        cost_delta_usd      = round(total_cost, 2),
-        risk_delta          = round(min(1.0, max(-1.0, total_risk)), 3),
-        confidence          = confidence,
-        bottleneck_warnings = list(dict.fromkeys(all_warnings)),  # deduplicated
-        change_impacts      = change_impacts,
+    # Persist to PostgreSQL
+    await persist_simulation_result(
+        simulation_id=simulation_id,
+        project_id=project_id,
+        simulation_type="WHAT_IF",
+        input_payload={"changes": [{"type": c.type, "payload": c.payload} for c in changes], "context": context},
+        result_payload=asdict(result),
     )
+
+    return result
+
+
+# ── Private helpers ────────────────────────────────────────────────────────────
+
+def _compute_duration(points: float, velocity: float) -> float:
+    if velocity <= 0:
+        return 999.0
+    return (points / velocity) * DEFAULT_SPRINT_DAYS
+
+
+def _monte_carlo(points: float, velocity: float, n: int = 2_000) -> np.ndarray:
+    noise = np.random.normal(1.0, 0.15, n)
+    velocities = np.maximum(velocity * noise, 0.1)
+    return (points / velocities) * DEFAULT_SPRINT_DAYS
+
+
+def _apply_change(
+    change: SimulationChange,
+    points: float,
+    team: int,
+    velocity: float,
+    daily_rate: float,
+) -> Dict[str, Any]:
+    t = change.type
+    p = change.payload
+
+    if t == "ADD_DEVELOPER":
+        added = int(p.get("count", 1))
+        ramp  = float(p.get("ramp_factor", 0.5))
+        return {
+            "type": t,
+            "delta_points": 0,
+            "delta_team": added,
+            "delta_velocity": added * DEFAULT_VELOCITY_PTS_PER_DEV_PER_SPRINT * ramp,
+            "delta_cost_usd": added * daily_rate * DEFAULT_SPRINT_DAYS,
+            "bottleneck": (
+                f"{added} new developer(s): ramp-up reduces initial velocity "
+                f"by {int((1 - ramp) * 100)}% for first sprint"
+            ),
+        }
+
+    if t == "REMOVE_DEVELOPER":
+        removed  = int(p.get("count", 1))
+        is_lead  = bool(p.get("is_lead", False))
+        vel_loss = removed * DEFAULT_VELOCITY_PTS_PER_DEV_PER_SPRINT
+        if is_lead:
+            vel_loss *= 1.4   # knowledge-transfer overhead
+        return {
+            "type": t,
+            "delta_points": 0,
+            "delta_team": -removed,
+            "delta_velocity": -vel_loss,
+            "delta_cost_usd": 0,
+            "bottleneck": (
+                "Lead developer removed — knowledge transfer risk HIGH, "
+                "expect 40% additional velocity penalty"
+                if is_lead
+                else None
+            ),
+        }
+
+    if t == "CHANGE_SCOPE":
+        delta = float(p.get("delta_points", 0))
+        return {
+            "type": t,
+            "delta_points": delta,
+            "delta_team": 0,
+            "delta_velocity": 0,
+            "delta_cost_usd": 0,
+            "bottleneck": (
+                f"Scope increased by {delta} pts — review sprint capacity"
+                if delta > 0
+                else None
+            ),
+        }
+
+    if t == "CHANGE_DEADLINE":
+        deadline_days   = float(p.get("deadline_days", 0))
+        current_days    = _compute_duration(points, velocity)
+        shortfall       = current_days - deadline_days
+        return {
+            "type": t,
+            "delta_points": 0,
+            "delta_team": 0,
+            "delta_velocity": 0,
+            "delta_cost_usd": 0,
+            "bottleneck": (
+                f"Deadline is {round(shortfall, 0)}d earlier than projected completion"
+                if shortfall > 0
+                else None
+            ),
+        }
+
+    return {
+        "type": t, "delta_points": 0, "delta_team": 0,
+        "delta_velocity": 0, "delta_cost_usd": 0, "bottleneck": None,
+    }
+
+
+def _classify_risk_delta(delta_days: float, baseline: float) -> str:
+    pct = (delta_days / max(baseline, 1)) * 100
+    if pct > 25:   return "CRITICAL — significant timeline overrun likely"
+    if pct > 10:   return "HIGH — notable delay risk, review scope"
+    if pct > 0:    return "MODERATE — minor delay, monitor closely"
+    if pct < -10:  return "POSITIVE — timeline improvement detected"
+    return "NEUTRAL — minimal impact on timeline"

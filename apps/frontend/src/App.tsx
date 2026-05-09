@@ -1,17 +1,15 @@
-// apps/frontend/src/App.tsx  ← UPDATED: use AppRouter + QueryClient
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+// apps/frontend/src/App.tsx
+import { QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { queryClient } from './lib/query-client';
 import { AppRouter } from './routes/AppRouter';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { staleTime: 30_000, retry: 1 },
-  },
-});
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppRouter />
+      {/* DevTools only bundled in development — tree-shaken in production build */}
+      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-right" />}
     </QueryClientProvider>
   );
 }

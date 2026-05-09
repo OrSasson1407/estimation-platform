@@ -1,4 +1,4 @@
-// apps/project-service/src/project-service.controller.ts  ← PHASE 1 UPGRADE
+// apps/project-service/src/project-service.controller.ts
 import {
   Controller,
   Get,
@@ -17,13 +17,16 @@ import { AuthGuard } from '@nestjs/passport';
 import {
   ProjectService,
   CreateProjectSchema,
+  UpdateProjectSchema,
   CreateTaskSchema,
   UpdateTaskStatusSchema,
+  CreateTeamSchema,
+  AddTeamMemberSchema,
 } from './project-service.service';
 import { SprintService, CreateSprintSchema, UpdateSprintSchema } from './sprint.service';
 import { ZodValidationPipe } from './zod-validation.pipe';
 
-@Controller('api/v1/projects')
+@Controller('api/v1')
 @UseGuards(AuthGuard('jwt'))
 export class ProjectController {
   constructor(
@@ -33,30 +36,79 @@ export class ProjectController {
 
   // ── Projects ───────────────────────────────────────────────────────────────
 
-  @Post()
-  createProject(@Body(new ZodValidationPipe(CreateProjectSchema)) body: any, @Request() req: any) {
+  @Post('projects')
+  createProject(
+    @Body(new ZodValidationPipe(CreateProjectSchema)) body: any,
+    @Request() req: any,
+  ) {
     return this.projectService.createProject(body, req.user.userId);
   }
 
-  @Get(':id')
+  @Get('projects')
+  listProjects(@Query('orgId') orgId: string, @Query('page') page = '1', @Query('limit') limit = '20') {
+    return this.projectService.listProjects(orgId, parseInt(page), parseInt(limit));
+  }
+
+  @Get('projects/:id')
   getProject(@Param('id') id: string) {
     return this.projectService.getProjectDetails(id);
   }
 
-  @Patch(':id/archive')
+  @Patch('projects/:id')
+  updateProject(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(UpdateProjectSchema)) body: any,
+    @Request() req: any,
+  ) {
+    return this.projectService.updateProject(id, body, req.user.userId);
+  }
+
+  @Patch('projects/:id/archive')
   @HttpCode(HttpStatus.OK)
   archiveProject(@Param('id') id: string, @Request() req: any) {
     return this.projectService.archiveProject(id, req.user.userId);
   }
 
+  // ── Teams ──────────────────────────────────────────────────────────────────
+
+  @Post('teams')
+  createTeam(
+    @Body(new ZodValidationPipe(CreateTeamSchema)) body: any,
+    @Request() req: any,
+  ) {
+    return this.projectService.createTeam(body, req.user.userId);
+  }
+
+  @Get('teams/:teamId')
+  getTeam(@Param('teamId') teamId: string) {
+    return this.projectService.getTeam(teamId);
+  }
+
+  @Post('teams/:teamId/members')
+  addTeamMember(
+    @Param('teamId') teamId: string,
+    @Body(new ZodValidationPipe(AddTeamMemberSchema)) body: any,
+  ) {
+    return this.projectService.addTeamMember(teamId, body);
+  }
+
+  @Delete('teams/:teamId/members/:developerId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeTeamMember(
+    @Param('teamId') teamId: string,
+    @Param('developerId') developerId: string,
+  ) {
+    return this.projectService.removeTeamMember(teamId, developerId);
+  }
+
   // ── Tasks ──────────────────────────────────────────────────────────────────
 
-  @Get(':id/tasks')
+  @Get('projects/:id/tasks')
   getTasks(@Param('id') id: string, @Query('status') status?: string) {
     return this.projectService.getProjectTasks(id, status);
   }
 
-  @Post(':id/tasks')
+  @Post('projects/:id/tasks')
   createTask(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(CreateTaskSchema)) body: any,
@@ -97,12 +149,12 @@ export class ProjectController {
 
   // ── Sprints ────────────────────────────────────────────────────────────────
 
-  @Get(':id/sprints')
+  @Get('projects/:id/sprints')
   getSprints(@Param('id') id: string) {
     return this.projectService.getProjectSprints(id);
   }
 
-  @Post(':id/sprints')
+  @Post('projects/:id/sprints')
   createSprint(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(CreateSprintSchema)) body: any,
@@ -110,12 +162,12 @@ export class ProjectController {
     return this.sprintService.createSprint(id, body);
   }
 
-  @Get(':id/sprints/:sprintId')
+  @Get('projects/:id/sprints/:sprintId')
   getSprint(@Param('sprintId') sprintId: string) {
     return this.sprintService.getSprintById(sprintId);
   }
 
-  @Patch(':id/sprints/:sprintId')
+  @Patch('projects/:id/sprints/:sprintId')
   updateSprint(
     @Param('sprintId') sprintId: string,
     @Body(new ZodValidationPipe(UpdateSprintSchema)) body: any,
@@ -123,24 +175,24 @@ export class ProjectController {
     return this.sprintService.updateSprint(sprintId, body);
   }
 
-  @Post(':id/sprints/:sprintId/activate')
+  @Post('projects/:id/sprints/:sprintId/activate')
   @HttpCode(HttpStatus.OK)
   activateSprint(@Param('sprintId') sprintId: string) {
     return this.sprintService.activateSprint(sprintId);
   }
 
-  @Post(':id/sprints/:sprintId/complete')
+  @Post('projects/:id/sprints/:sprintId/complete')
   @HttpCode(HttpStatus.OK)
   completeSprint(@Param('sprintId') sprintId: string) {
     return this.sprintService.completeSprint(sprintId);
   }
 
-  @Post(':id/sprints/:sprintId/tasks')
+  @Post('projects/:id/sprints/:sprintId/tasks')
   addTaskToSprint(@Param('sprintId') sprintId: string, @Body('taskId') taskId: string) {
     return this.sprintService.addTaskToSprint(sprintId, taskId);
   }
 
-  @Delete(':id/sprints/:sprintId/tasks/:taskId')
+  @Delete('projects/:id/sprints/:sprintId/tasks/:taskId')
   @HttpCode(HttpStatus.NO_CONTENT)
   removeTaskFromSprint(@Param('sprintId') sprintId: string, @Param('taskId') taskId: string) {
     return this.sprintService.removeTaskFromSprint(sprintId, taskId);

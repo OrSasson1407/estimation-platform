@@ -16,7 +16,9 @@
     "@nestjs/jwt": "^10.2.0",
     "@nestjs/passport": "^10.0.3",
     "@nestjs/platform-express": "^10.0.0",
+    "handlebars": "^4.7.9",
     "kafkajs": "^2.2.4",
+    "nodemailer": "^8.0.7",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.0",
@@ -25,7 +27,9 @@
   "devDependencies": {
     "@estimation/tsconfig": "*",
     "@nestjs/cli": "^10.0.0",
+    "@types/handlebars": "^4.0.40",
     "@types/node": "^20.0.0",
+    "@types/nodemailer": "^8.0.0",
     "@types/passport-jwt": "^4.0.1",
     "typescript": "^5.1.3"
   }

@@ -1,4 +1,4 @@
-// apps/notification-service/src/app.module.ts  ← PHASE 1 UPGRADE
+// apps/notification-service/src/app.module.ts
 import { Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
@@ -12,6 +12,9 @@ import { JwtStrategy } from './jwt.strategy';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: process.env.JWT_PUBLIC_KEY || 'dev-secret',
+      verifyOptions: {
+        algorithms: process.env.JWT_PUBLIC_KEY ? ['RS256'] : ['HS256'],
+      },
     }),
   ],
   controllers: [NotificationController],
