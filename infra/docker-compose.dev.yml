@@ -1,5 +1,5 @@
 services:
-  # ??? DATABASES ?????????????????????????????????????????????????????????????
+  # 🗄️ DATABASES 🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️
   postgres:
     image: postgres:15-alpine
     container_name: estimation-postgres
@@ -39,7 +39,7 @@ services:
     command: redis-server --appendonly yes
 
   clickhouse:
-    image: clickhouse/clickhouse-server:23.8-alpine
+    image: clickhouse/clickhouse-server:23.8
     container_name: estimation-clickhouse
     environment:
       CLICKHOUSE_DB: default
@@ -51,7 +51,7 @@ services:
       - '8123:8123'
       - '9000:9000'
     healthcheck:
-      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8123/ping']
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -70,6 +70,11 @@ services:
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - estimation-platform
     restart: unless-stopped
@@ -83,7 +88,8 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -91,18 +97,19 @@ services:
       KAFKA_DELETE_TOPIC_ENABLE: 'true'
     ports:
       - '9092:9092'
+      - '9093:9093'
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ['CMD', 'kafka-broker-api-versions.sh', '--bootstrap-server', 'localhost:9092']
+      test: ["CMD", "cub", "kafka-ready", "-b", "127.0.0.1:9092", "1", "20"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
     networks:
       - estimation-platform
     restart: unless-stopped
 
-  # ??? API GATEWAY ???????????????????????????????????????????????????????????
+  # 🌐 API GATEWAY 🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐
   kong-db:
     image: postgres:15-alpine
     container_name: estimation-kong-db
@@ -151,7 +158,7 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # ??? MICROSERVICES ?????????????????????????????????????????????????????????
+  # 🧩 MICROSERVICES 🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩
 
   auth-service:
     build:
@@ -356,7 +363,7 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # ??? FRONTEND ???????????????????????????????????????????????????????????????
+  # 💻 FRONTEND 💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻
   frontend:
     build:
       context: ../apps/frontend
