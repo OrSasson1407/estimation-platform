@@ -1,5 +1,5 @@
 services:
-  # 🗄️ DATABASES 🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️🗄️
+  # DATABASE SERVICES
   postgres:
     image: postgres:15-alpine
     container_name: estimation-postgres
@@ -109,7 +109,7 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # 🌐 API GATEWAY 🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐🌐
+  # API GATEWAY
   kong-db:
     image: postgres:15-alpine
     container_name: estimation-kong-db
@@ -158,8 +158,7 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # 🧩 MICROSERVICES 🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩🧩
-
+  # MICROSERVICES
   auth-service:
     build:
       context: ../apps/auth-service
@@ -363,15 +362,18 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # 💻 FRONTEND 💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻💻
+  # FRONTEND
   frontend:
     build:
       context: ../apps/frontend
       dockerfile: Dockerfile
+      # FIX #5: VITE_* vars must be passed as build args, not environment vars.
+      # Vite bakes import.meta.env.* at build time � runtime env vars are invisible
+      # to the final bundle served by nginx.
+      args:
+        VITE_API_URL: 'http://localhost:4000/api/v1'
+        VITE_WS_URL: 'http://localhost:3004'
     container_name: estimation-frontend
-    environment:
-      VITE_API_URL: 'http://localhost:4000/api/v1'
-      VITE_WS_URL: 'http://localhost:3004'
     depends_on:
       - kong
     ports:

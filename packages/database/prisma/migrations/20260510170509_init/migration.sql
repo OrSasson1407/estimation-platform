@@ -41,36 +41,46 @@ ALTER TABLE "Team" DROP CONSTRAINT "Team_orgId_fkey";
 ALTER TABLE "VelocityRecord" DROP CONSTRAINT "VelocityRecord_sprintId_fkey";
 
 -- AlterTable
-ALTER TABLE "AuditLog" ADD COLUMN     "ipAddress" TEXT;
+ALTER TABLE "AuditLog" ADD COLUMN "ipAddress" TEXT;
 
 -- AlterTable
-ALTER TABLE "Developer" ADD COLUMN     "isActive" BOOLEAN NOT NULL DEFAULT true,
-ADD COLUMN     "lastActiveAt" TIMESTAMP(3);
+ALTER TABLE "Developer" ADD COLUMN "isActive" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN "lastActiveAt" TIMESTAMP(3);
+
+-- AlterTable: DeveloperSkill — FIX #2: safe nullable->backfill->constrain for updatedAt
+ALTER TABLE "DeveloperSkill" ADD COLUMN "updatedAt" TIMESTAMP(3);
+UPDATE "DeveloperSkill" SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
+ALTER TABLE "DeveloperSkill" ALTER COLUMN "updatedAt" SET NOT NULL;
+ALTER TABLE "DeveloperSkill" ADD COLUMN "yearsExp" INTEGER;
 
 -- AlterTable
-ALTER TABLE "DeveloperSkill" ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL,
-ADD COLUMN     "yearsExp" INTEGER;
+ALTER TABLE "Estimation" ADD COLUMN "actualHours" DOUBLE PRECISION,
+ADD COLUMN "revisedAt" TIMESTAMP(3);
+
+-- AlterTable: Organization — FIX #3: safe nullable->backfill->constrain for apiKey
+ALTER TABLE "Organization" ADD COLUMN "apiKey" TEXT;
+UPDATE "Organization" SET "apiKey" = gen_random_uuid()::text WHERE "apiKey" IS NULL;
+ALTER TABLE "Organization" ALTER COLUMN "apiKey" SET NOT NULL;
+
+-- AlterTable: RiskAlert — FIX #2: safe nullable->backfill->constrain for updatedAt
+ALTER TABLE "RiskAlert" ADD COLUMN "resolvedBy" TEXT;
+ALTER TABLE "RiskAlert" ADD COLUMN "updatedAt" TIMESTAMP(3);
+UPDATE "RiskAlert" SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
+ALTER TABLE "RiskAlert" ALTER COLUMN "updatedAt" SET NOT NULL;
+
+-- AlterTable: Sprint — FIX #2: safe nullable->backfill->constrain for updatedAt
+ALTER TABLE "Sprint" ADD COLUMN "updatedAt" TIMESTAMP(3);
+UPDATE "Sprint" SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
+ALTER TABLE "Sprint" ALTER COLUMN "updatedAt" SET NOT NULL;
+
+-- AlterTable: Team — FIX #2: safe nullable->backfill->constrain for updatedAt
+ALTER TABLE "Team" ADD COLUMN "description" TEXT;
+ALTER TABLE "Team" ADD COLUMN "updatedAt" TIMESTAMP(3);
+UPDATE "Team" SET "updatedAt" = NOW() WHERE "updatedAt" IS NULL;
+ALTER TABLE "Team" ALTER COLUMN "updatedAt" SET NOT NULL;
 
 -- AlterTable
-ALTER TABLE "Estimation" ADD COLUMN     "actualHours" DOUBLE PRECISION,
-ADD COLUMN     "revisedAt" TIMESTAMP(3);
-
--- AlterTable
-ALTER TABLE "Organization" ADD COLUMN     "apiKey" TEXT NOT NULL;
-
--- AlterTable
-ALTER TABLE "RiskAlert" ADD COLUMN     "resolvedBy" TEXT,
-ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL;
-
--- AlterTable
-ALTER TABLE "Sprint" ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL;
-
--- AlterTable
-ALTER TABLE "Team" ADD COLUMN     "description" TEXT,
-ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL;
-
--- AlterTable
-ALTER TABLE "TeamMember" ADD COLUMN     "role" "TeamMemberRole" NOT NULL DEFAULT 'DEVELOPER';
+ALTER TABLE "TeamMember" ADD COLUMN "role" "TeamMemberRole" NOT NULL DEFAULT 'DEVELOPER';
 
 -- CreateTable
 CREATE TABLE "SimulationResult" (
@@ -97,7 +107,7 @@ CREATE TABLE "Webhook" (
     CONSTRAINT "Webhook_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
+-- CreateTable: WebhookDelivery — FIX #9: added updatedAt to track status transitions
 CREATE TABLE "WebhookDelivery" (
     "id" TEXT NOT NULL,
     "webhookId" TEXT NOT NULL,
@@ -108,6 +118,7 @@ CREATE TABLE "WebhookDelivery" (
     "lastError" TEXT,
     "sentAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT NOW(),
 
     CONSTRAINT "WebhookDelivery_pkey" PRIMARY KEY ("id")
 );
@@ -130,8 +141,10 @@ CREATE INDEX "Webhook_isActive_idx" ON "Webhook"("isActive");
 -- CreateIndex
 CREATE INDEX "WebhookDelivery_webhookId_idx" ON "WebhookDelivery"("webhookId");
 
--- CreateIndex
-CREATE INDEX "WebhookDelivery_status_idx" ON "WebhookDelivery"("status");
+-- CreateIndex: FIX #14: partial index — only index PENDING rows (the hot write path).
+-- A full index on status becomes a hot spot once PENDING->SUCCESS/FAILED updates pile up.
+CREATE INDEX "WebhookDelivery_status_pending_idx" ON "WebhookDelivery"("status")
+  WHERE status = 'PENDING';
 
 -- CreateIndex
 CREATE INDEX "AuditLog_createdAt_idx" ON "AuditLog"("createdAt");
@@ -171,6 +184,14 @@ CREATE INDEX "TaskAssignment_taskId_idx" ON "TaskAssignment"("taskId");
 
 -- CreateIndex
 CREATE INDEX "Team_orgId_idx" ON "Team"("orgId");
+
+-- FIX #8: Deduplicate team names within the same org before enforcing uniqueness.
+-- Keeps the oldest row (lowest ctid) when duplicates exist, to avoid dropping data silently.
+DELETE FROM "Team" a
+USING "Team" b
+WHERE a.ctid > b.ctid
+  AND a."orgId" = b."orgId"
+  AND a."name" = b."name";
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Team_orgId_name_key" ON "Team"("orgId", "name");

@@ -1,23 +1,37 @@
-// apps/developer-service/src/developer-service.service.ts  â† UPDATED: full Prisma impl
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { prisma } from '@estimation/database';
-import { createLogger } from '@estimation/logger';
-import { KAFKA_TOPICS } from '@estimation/events';
-import { Kafka } from 'kafkajs';
+import { Injectable, NotFoundException, ForbiddenException } from "@nestjs/common";
+import { prisma } from "@estimation/database";
+import { createLogger } from "@estimation/logger";
+import { KAFKA_TOPICS } from "@estimation/events";
+import { Kafka, Producer } from "kafkajs";
 
-const logger = createLogger('developer-service');
-
-const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] });
-const producer = kafka.producer();
+const logger = createLogger("developer-service");
 
 @Injectable()
 export class DeveloperService {
+  // FIX #10: producer declared as instance field, not module-level singleton.
+  // Instantiating Kafka at module scope crashes the entire import if the broker
+  // is unreachable at startup. Moving it here lets the service start degraded
+  // and report unhealthy via its health endpoint instead of hard-crashing.
+  private producer: Producer | null = null;
+
   async onModuleInit() {
-    await producer.connect();
+    try {
+      const kafka = new Kafka({
+        brokers: [process.env.KAFKA_BROKER || "localhost:9092"],
+      });
+      this.producer = kafka.producer();
+      await this.producer.connect();
+      logger.info("kafka_producer_connected");
+    } catch (err) {
+      logger.error({ err }, "kafka_producer_connect_failed — service starting degraded");
+      // Do not rethrow: service remains up so its /health endpoint is reachable.
+    }
   }
 
   async onModuleDestroy() {
-    await producer.disconnect();
+    if (this.producer) {
+      await this.producer.disconnect();
+    }
   }
 
   async getProfile(id: string, requestingUserId: string, requestingRole: string) {
@@ -31,12 +45,11 @@ export class DeveloperService {
 
     if (!developer) throw new NotFoundException(`Developer ${id} not found`);
 
-    // RBAC: developers can only read their own profile
-    if (requestingRole === 'DEVELOPER' && developer.id !== requestingUserId) {
-      throw new ForbiddenException('Developers may only view their own profile');
+    if (requestingRole === "DEVELOPER" && developer.id !== requestingUserId) {
+      throw new ForbiddenException("Developers may only view their own profile");
     }
 
-    logger.info({ developerId: id, requestedBy: requestingUserId }, 'profile_fetched');
+    logger.info({ developerId: id, requestedBy: requestingUserId }, "profile_fetched");
 
     return {
       id: developer.id,
@@ -55,7 +68,7 @@ export class DeveloperService {
     };
   }
 
-  async getVelocityHistory(id: string, from?: string, to?: string, granularity = 'sprint') {
+  async getVelocityHistory(id: string, from?: string, to?: string, granularity = "sprint") {
     const developer = await prisma.developer.findUnique({ where: { id } });
     if (!developer) throw new NotFoundException(`Developer ${id} not found`);
 
@@ -66,14 +79,17 @@ export class DeveloperService {
         ...(to && { recordedAt: { lte: new Date(to) } }),
       },
       include: { sprint: true },
-      orderBy: { recordedAt: 'asc' },
+      orderBy: { recordedAt: "asc" },
     });
 
     return {
       developerId: id,
       granularity,
       history: records.map((r) => ({
-        period: granularity === 'sprint' ? r.sprint.name : r.recordedAt.toISOString().slice(0, 10),
+        period:
+          granularity === "sprint"
+            ? r.sprint.name
+            : r.recordedAt.toISOString().slice(0, 10),
         sprintId: r.sprintId,
         completedPoints: r.points,
         hoursLogged: r.hours,
@@ -85,23 +101,16 @@ export class DeveloperService {
   async getTeamCompositionScore(teamId: string) {
     const members = await prisma.teamMember.findMany({
       where: { teamId },
-      include: {
-        developer: { include: { skills: true } },
-      },
+      include: { developer: { include: { skills: true } } },
     });
 
     if (!members.length) throw new NotFoundException(`Team ${teamId} not found or empty`);
 
     const developers = members.map((m) => m.developer);
-
-    // Skill coverage: unique skills vs total possible skill slots
     const allSkills = new Set(developers.flatMap((d) => d.skills.map((s) => s.skill)));
-    const skillCoverage = Math.min(allSkills.size / 10, 1); // normalised to 10 core skills
-
-    // Synergy: average pairwise estimation accuracy
+    const skillCoverage = Math.min(allSkills.size / 10, 1);
     const avgAcc = developers.reduce((sum, d) => sum + d.estimationAcc, 0) / developers.length;
 
-    // Single points of failure: skills owned by exactly one developer
     const skillOwnerCount = new Map<string, number>();
     for (const dev of developers) {
       for (const s of dev.skills) {
@@ -109,8 +118,6 @@ export class DeveloperService {
       }
     }
     const singlePointsOfFailure = [...skillOwnerCount.values()].filter((c) => c === 1).length;
-
-    // Predicted velocity: sum of individual average task durations
     const predictedVelocity = developers.reduce((sum, d) => sum + d.avgTaskDuration, 0);
 
     return {
@@ -130,26 +137,26 @@ export class DeveloperService {
     });
 
     if (developers.length !== developerIds.length) {
-      throw new NotFoundException('One or more developer IDs not found');
+      throw new NotFoundException("One or more developer IDs not found");
     }
 
     const avgLoad = developers.reduce((s, d) => s + d.cognitiveLoad, 0) / developers.length;
     const avgAcc = developers.reduce((s, d) => s + d.estimationAcc, 0) / developers.length;
     const burnoutRisks = developers.map((d) => d.burnoutRisk);
 
-    const riskFactor = burnoutRisks.includes('CRITICAL')
-      ? 'CRITICAL'
-      : burnoutRisks.includes('HIGH')
-        ? 'HIGH'
+    const riskFactor = burnoutRisks.includes("CRITICAL")
+      ? "CRITICAL"
+      : burnoutRisks.includes("HIGH")
+        ? "HIGH"
         : avgLoad > 75
-          ? 'MODERATE'
-          : 'LOW';
+          ? "MODERATE"
+          : "LOW";
 
     const bottleneckWarnings = developers
       .filter((d) => d.cognitiveLoad > 80)
       .map((d) => `${d.name} has cognitive load at ${d.cognitiveLoad}%`);
 
-    logger.info({ projectId, teamSize: developers.length, riskFactor }, 'team_simulation_run');
+    logger.info({ projectId, teamSize: developers.length, riskFactor }, "team_simulation_run");
 
     return {
       projectId,
@@ -167,29 +174,32 @@ export class DeveloperService {
       data: { cognitiveLoad: load },
     });
 
-    // Publish profile update event to Kafka
-    await producer.send({
-      topic: KAFKA_TOPICS.PROFILE_UPDATED,
-      messages: [
-        {
-          key: developerId,
-          value: JSON.stringify({
-            eventId: crypto.randomUUID(),
-            eventType: KAFKA_TOPICS.PROFILE_UPDATED,
-            version: '1.0',
-            timestamp: new Date().toISOString(),
-            orgId: updated.orgId,
-            projectId: '',
-            userId: developerId,
-            data: {
-              developerId,
-              changedFields: ['cognitiveLoad'],
-              burnoutRisk: updated.burnoutRisk,
-            },
-          }),
-        },
-      ],
-    });
+    if (this.producer) {
+      await this.producer.send({
+        topic: KAFKA_TOPICS.PROFILE_UPDATED,
+        messages: [
+          {
+            key: developerId,
+            value: JSON.stringify({
+              eventId: crypto.randomUUID(),
+              eventType: KAFKA_TOPICS.PROFILE_UPDATED,
+              version: "1.0",
+              timestamp: new Date().toISOString(),
+              orgId: updated.orgId,
+              projectId: "",
+              userId: developerId,
+              data: {
+                developerId,
+                changedFields: ["cognitiveLoad"],
+                burnoutRisk: updated.burnoutRisk,
+              },
+            }),
+          },
+        ],
+      });
+    } else {
+      logger.warn({ developerId }, "kafka_unavailable — profile update event not published");
+    }
 
     return updated;
   }
