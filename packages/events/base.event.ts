@@ -1,4 +1,4 @@
-﻿// Base envelope for all Kafka events
+// Base envelope for all Kafka events
 export interface BaseEvent<T> {
   eventId: string; // UUID v4
   eventType: string; // e.g., 'estimation.estimate.generated'

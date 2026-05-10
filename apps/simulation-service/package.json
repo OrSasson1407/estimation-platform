@@ -1,12 +1,1 @@
-{
-  "name": "@estimation/simulation-service",
-  "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "scripts": {
-    "start:prod": "node dist/main.js",
-    "build": "mkdir -p dist && echo \"console.log('Simulation Service running...'); setInterval(() => {}, 60000);\" > dist/main.js"
-  }
-}
+{"name":"simulation-service","version":"1.0.0"}

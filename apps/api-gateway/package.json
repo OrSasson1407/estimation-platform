@@ -1,12 +1,1 @@
-{
-  "name": "@estimation/api-gateway",
-  "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "scripts": {
-    "start:prod": "node dist/main.js",
-    "build": "mkdir -p dist && echo \"console.log('API Gateway running...'); setInterval(() => {}, 60000);\" > dist/main.js"
-  }
-}
+{"name":"api-gateway","version":"1.0.0"}

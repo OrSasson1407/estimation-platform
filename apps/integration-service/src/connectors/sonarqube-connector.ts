@@ -8,8 +8,8 @@ import * as crypto from 'crypto';
  * Emits canonical events that the analytics/estimation pipeline can consume.
  */
 export class SonarQubeConnector implements IConnector {
-  private baseUrl: string;
-  private token: string;
+  private baseUrl!: string;
+  private token!: string;
 
   async connect(credentials: OAuthTokens): Promise<void> {
     this.token = credentials.accessToken;
@@ -108,3 +108,4 @@ export class SonarQubeConnector implements IConnector {
     }
   }
 }
+

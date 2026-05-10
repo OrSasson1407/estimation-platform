@@ -13,7 +13,7 @@ const logger = createLogger('integration-service');
 const kafka = new Kafka({ brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] });
 const producer = kafka.producer();
 
-interface ConnectorStatus {
+export interface ConnectorStatus {
   name: string;
   enabled: boolean;
   lastSyncAt: string | null;
@@ -28,7 +28,7 @@ export class IntegrationService {
   private statusMap = new Map<string, ConnectorStatus>();
 
   async onModuleInit() {
-    await producer.connect();
+    try {`n      await producer.connect();`n    } catch (e) {`n      console.warn('[integration-service] Kafka not available - events will not be published', e.message);`n    };
     this.statusMap.set('jira', { name: 'Jira', enabled: true, lastSyncAt: null, error: null });
     this.statusMap.set('github', { name: 'GitHub', enabled: true, lastSyncAt: null, error: null });
     this.statusMap.set('sonarqube', {
@@ -130,3 +130,5 @@ export class IntegrationService {
     }
   }
 }
+
+

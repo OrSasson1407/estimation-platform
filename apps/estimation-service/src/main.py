@@ -1,4 +1,4 @@
-﻿# apps/estimation-service/src/main.py  ← UPGRADED v2
+# apps/estimation-service/src/main.py  ← UPGRADED v2
 from fastapi import FastAPI, HTTPException, Path, Header
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Histogram, Counter, generate_latest, CONTENT_TYPE_LATEST

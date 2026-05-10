@@ -1,4 +1,4 @@
-﻿name: Estimation Platform CI/CD
+name: Estimation Platform CI/CD
 
 on:
   push:

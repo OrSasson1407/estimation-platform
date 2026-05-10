@@ -1,4 +1,4 @@
-﻿apiVersion: v2
+apiVersion: v2
 name: estimation-platform
 description: A Helm chart for Kubernetes deployment of the AI Estimation Platform
 type: application

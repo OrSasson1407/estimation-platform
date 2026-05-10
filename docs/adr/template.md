@@ -1,4 +1,4 @@
-﻿# ADR-001: [Title of the Decision]
+# ADR-001: [Title of the Decision]
 
 - **Status**: Proposed / Accepted / Superseded
 - **Date**: YYYY-MM-DD

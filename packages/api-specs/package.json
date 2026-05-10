@@ -1,8 +1,1 @@
-﻿{
-  "name": "@estimation/api-specs",
-  "version": "1.0.0",
-  "private": true,
-  "exports": {
-    "./openapi.yaml": "./openapi.yaml"
-  }
-}
+{"name":"api-specs","version":"1.0.0"}

@@ -1,4 +1,4 @@
-﻿{
+{
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -12,7 +12,6 @@
     "sourceMap": true,
     "incremental": true,
     "types": ["node"],
-    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@estimation/*": ["packages/*/index.ts"]
@@ -20,3 +19,5 @@
   },
   "exclude": ["node_modules", "dist"]
 }
+
+

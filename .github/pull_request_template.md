@@ -1,4 +1,4 @@
-﻿## 🎯 Purpose
+## 🎯 Purpose
 
 Briefly describe the context and the problem this PR solves.
 

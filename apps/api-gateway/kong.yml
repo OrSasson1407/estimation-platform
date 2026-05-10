@@ -1,4 +1,4 @@
-﻿# apps/api-gateway/kong.yml  ← UPDATED: full service routing
+# apps/api-gateway/kong.yml  ← UPDATED: full service routing
 _format_version: '3.0'
 _transform: true
 

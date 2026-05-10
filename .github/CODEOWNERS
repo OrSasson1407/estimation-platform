@@ -1,4 +1,4 @@
-﻿# This file assigns code ownership to enforce reviews before merging.
+# This file assigns code ownership to enforce reviews before merging.
 # Syntax: <path> <github-username>
 
 *       @OrSasson1407

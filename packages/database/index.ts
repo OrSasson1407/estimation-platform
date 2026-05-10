@@ -1,4 +1,4 @@
-﻿import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 // Add prisma to the NodeJS global type to prevent multiple instances during hot-reloads in dev
 const globalForPrisma = global as unknown as { prisma: PrismaClient };

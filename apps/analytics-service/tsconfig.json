@@ -1,4 +1,4 @@
-﻿{
+{
   "extends": "../../packages/typescript-config/base.json",
   "compilerOptions": {
     "rootDir": "./src",
