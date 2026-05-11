@@ -28,7 +28,7 @@ export class IntegrationService {
   private statusMap = new Map<string, ConnectorStatus>();
 
   async onModuleInit() {
-    try {`n      await producer.connect();`n    } catch (e) {`n      console.warn('[integration-service] Kafka not available - events will not be published', e.message);`n    };
+    try {`n      await producer.connect();`    } catch (e) {`n      console.warn('[integration-service] Kafka not available - events will not be published', e.message);`   };
     this.statusMap.set('jira', { name: 'Jira', enabled: true, lastSyncAt: null, error: null });
     this.statusMap.set('github', { name: 'GitHub', enabled: true, lastSyncAt: null, error: null });
     this.statusMap.set('sonarqube', {

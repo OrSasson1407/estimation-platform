@@ -368,7 +368,7 @@ services:
       context: ../apps/frontend
       dockerfile: Dockerfile
       # FIX #5: VITE_* vars must be passed as build args, not environment vars.
-      # Vite bakes import.meta.env.* at build time — runtime env vars are invisible
+      # Vite bakes import.meta.env.* at build time ï¿½ runtime env vars are invisible
       # to the final bundle served by nginx.
       args:
         VITE_API_URL: 'http://localhost:4000/api/v1'
