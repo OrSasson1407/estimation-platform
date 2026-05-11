@@ -1,5 +1,4 @@
 services:
-  # DATABASE SERVICES
   postgres:
     image: postgres:15-alpine
     container_name: estimation-postgres
@@ -7,7 +6,6 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password123
       POSTGRES_DB: estimation
-      PGPORT: 5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -38,40 +36,17 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes
 
-  clickhouse:
-    image: clickhouse/clickhouse-server:23.8
-    container_name: estimation-clickhouse
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ''
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    ports:
-      - '8123:8123'
-      - '9000:9000'
-    healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: estimation-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - '2181:2181'
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_logs:/var/lib/zookeeper/log
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 || exit 1"]
+      test: ['CMD-SHELL', 'echo ruok | nc -w 2 localhost 2181 || exit 1']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -95,13 +70,14 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_DELETE_TOPIC_ENABLE: 'true'
+      KAFKAJS_NO_PARTITIONER_WARNING: '1'
     ports:
       - '9092:9092'
       - '9093:9093'
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "cub", "kafka-ready", "-b", "127.0.0.1:9092", "1", "20"]
+      test: ['CMD', 'cub', 'kafka-ready', '-b', '127.0.0.1:9092', '1', '20']
       interval: 10s
       timeout: 10s
       retries: 10
@@ -109,294 +85,34 @@ services:
       - estimation-platform
     restart: unless-stopped
 
-  # API GATEWAY
-  kong-db:
-    image: postgres:15-alpine
-    container_name: estimation-kong-db
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: estimation-clickhouse
     environment:
-      POSTGRES_USER: kong
-      POSTGRES_PASSWORD: kong
-      POSTGRES_DB: kong
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ''
     volumes:
-      - kong_db_data:/var/lib/postgresql/data
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - '8123:8123'
+      - '9000:9000'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U kong -d kong']
+      test: ['CMD-SHELL', "clickhouse-client --query 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  kong:
-    image: kong:latest
-    container_name: estimation-kong
-    depends_on:
-      kong-db:
-        condition: service_healthy
-    environment:
-      KONG_DATABASE: postgres
-      KONG_PG_HOST: kong-db
-      KONG_PG_USER: kong
-      KONG_PG_PASSWORD: kong
-      KONG_PG_DATABASE: kong
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_LISTEN: 0.0.0.0:8001
-      KONG_PROXY_LISTEN: 0.0.0.0:8000
-    ports:
-      - '4000:8000'
-      - '8005:8001'
-    healthcheck:
-      test: ['CMD', 'kong', 'health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  # MICROSERVICES
-  auth-service:
-    build:
-      context: ../apps/auth-service
-      dockerfile: Dockerfile
-    container_name: estimation-auth-service
-    environment:
-      NODE_ENV: development
-      PORT: 3001
-      DATABASE_URL: 'postgresql://admin:password123@postgres:5432/estimation?schema=public'
-      REDIS_URL: 'redis://redis:6379'
-      KAFKA_BROKER: 'kafka:9092'
-      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-mock_private_key}
-      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-mock_public_key}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3001:3001'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  project-service:
-    build:
-      context: ../apps/project-service
-      dockerfile: Dockerfile
-    container_name: estimation-project-service
-    environment:
-      NODE_ENV: development
-      PORT: 3002
-      DATABASE_URL: 'postgresql://admin:password123@postgres:5432/estimation?schema=public'
-      KAFKA_BROKER: 'kafka:9092'
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3002:3002'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  developer-service:
-    build:
-      context: ../apps/developer-service
-      dockerfile: Dockerfile
-    container_name: estimation-developer-service
-    environment:
-      NODE_ENV: development
-      PORT: 3003
-      DATABASE_URL: 'postgresql://admin:password123@postgres:5432/estimation?schema=public'
-      KAFKA_BROKER: 'kafka:9092'
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3003:3003'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  collaboration-service:
-    build:
-      context: ../apps/collaboration-service
-      dockerfile: Dockerfile
-    container_name: estimation-collaboration-service
-    environment:
-      NODE_ENV: development
-      PORT: 3004
-      REDIS_URL: 'redis://redis:6379'
-      FRONTEND_URL: 'http://localhost:3000'
-    depends_on:
-      redis:
-        condition: service_healthy
-    ports:
-      - '3004:3004'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  integration-service:
-    build:
-      context: ../apps/integration-service
-      dockerfile: Dockerfile
-    container_name: estimation-integration-service
-    environment:
-      NODE_ENV: development
-      PORT: 3005
-      KAFKA_BROKER: 'kafka:9092'
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-secret}
-      JIRA_WEBHOOK_SECRET: ${JIRA_WEBHOOK_SECRET:-dev-secret}
-      JIRA_CLIENT_ID: ${JIRA_CLIENT_ID:-mock_jira_client}
-      JIRA_CLIENT_SECRET: ${JIRA_CLIENT_SECRET:-mock_jira_secret}
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3005:3005'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  risk-service:
-    build:
-      context: ../apps/risk-service
-      dockerfile: Dockerfile
-    container_name: estimation-risk-service
-    environment:
-      NODE_ENV: development
-      PORT: 3006
-      DATABASE_URL: 'postgresql://admin:password123@postgres:5432/estimation?schema=public'
-      KAFKA_BROKER: 'kafka:9092'
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3006:3006'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  analytics-service:
-    build:
-      context: ../apps/analytics-service
-      dockerfile: Dockerfile
-    container_name: estimation-analytics-service
-    environment:
-      NODE_ENV: development
-      PORT: 3007
-      CLICKHOUSE_URL: 'http://clickhouse:8123'
-      KAFKA_BROKER: 'kafka:9092'
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3007:3007'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  notification-service:
-    build:
-      context: ../apps/notification-service
-      dockerfile: Dockerfile
-    container_name: estimation-notification-service
-    environment:
-      NODE_ENV: development
-      PORT: 3008
-      KAFKA_BROKER: 'kafka:9092'
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
-      FRONTEND_URL: 'http://localhost:3000'
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - '3008:3008'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  estimation-service:
-    build:
-      context: ../apps/estimation-service
-      dockerfile: Dockerfile
-    container_name: estimation-ml-service
-    environment:
-      NODE_ENV: development
-      PORT: 8000
-      DATABASE_URL: 'postgresql://admin:password123@postgres:5432/estimation?schema=public'
-      MODEL_PATH: '/app/models/model.joblib'
-      MODEL_VERSION: 'v1.0.0-dev'
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - '8000:8000'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  simulation-service:
-    build:
-      context: ../apps/simulation-service
-      dockerfile: Dockerfile
-    container_name: estimation-simulation-service
-    environment:
-      NODE_ENV: development
-      PORT: 8001
-    ports:
-      - '8002:8001'
-    networks:
-      - estimation-platform
-    restart: unless-stopped
-
-  # FRONTEND
-  frontend:
-    build:
-      context: ../apps/frontend
-      dockerfile: Dockerfile
-      # FIX #5: VITE_* vars must be passed as build args, not environment vars.
-      # Vite bakes import.meta.env.* at build time � runtime env vars are invisible
-      # to the final bundle served by nginx.
-      args:
-        VITE_API_URL: 'http://localhost:4000/api/v1'
-        VITE_WS_URL: 'http://localhost:3004'
-    container_name: estimation-frontend
-    depends_on:
-      - kong
-    ports:
-      - '3000:3000'
     networks:
       - estimation-platform
     restart: unless-stopped
 
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
-  clickhouse_data:
-    driver: local
   zookeeper_data:
-    driver: local
   zookeeper_logs:
-    driver: local
   kafka_data:
-    driver: local
-  kong_db_data:
-    driver: local
+  clickhouse_data:
 
 networks:
   estimation-platform:

@@ -9,7 +9,8 @@
     "test": {},
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "dotEnv": [".env"]
     }
   }
 }

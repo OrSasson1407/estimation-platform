@@ -1,64 +1,65 @@
 {
-  "name": "estimation-platform",
-  "version": "1.0.2",
-  "description": "AI-powered estimation platform with microservices architecture",
-  "private": true,
-  "scripts": {
-    "dev": "turbo run dev --parallel",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "turbo run lint",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "type-check": "turbo run type-check",
-    "db:setup": "cd packages/database && npx prisma migrate dev --name init",
-    "db:seed": "cd packages/database && npx ts-node seed.ts",
-    "db:reset": "cd packages/database && npx prisma migrate reset --force",
-    "db:push": "cd packages/database && npx prisma db push",
-    "db:studio": "cd packages/database && npx prisma studio",
-    "docker:up": "docker-compose -f infra/docker-compose.dev.yml up -d",
-    "docker:down": "docker-compose -f infra/docker-compose.dev.yml down",
-    "docker:logs": "docker-compose -f infra/docker-compose.dev.yml logs -f",
-    "docker:restart": "docker-compose -f infra/docker-compose.dev.yml restart",
-    "docker:clean": "docker-compose -f infra/docker-compose.dev.yml down -v",
-    "start": "npm run docker:up && npm run db:setup && npm run db:seed && npm run dev",
-    "stop": "npm run docker:down",
-    "health": "docker-compose -f infra/docker-compose.dev.yml ps",
-    "logs:auth": "docker-compose -f infra/docker-compose.dev.yml logs -f auth-service",
-    "logs:project": "docker-compose -f infra/docker-compose.dev.yml logs -f project-service",
-    "logs:developer": "docker-compose -f infra/docker-compose.dev.yml logs -f developer-service",
-    "logs:risk": "docker-compose -f infra/docker-compose.dev.yml logs -f risk-service",
-    "logs:analytics": "docker-compose -f infra/docker-compose.dev.yml logs -f analytics-service",
-    "logs:notification": "docker-compose -f infra/docker-compose.dev.yml logs -f notification-service",
-    "logs:integration": "docker-compose -f infra/docker-compose.dev.yml logs -f integration-service",
-    "logs:collaboration": "docker-compose -f infra/docker-compose.dev.yml logs -f collaboration-service",
-    "logs:estimation": "docker-compose -f infra/docker-compose.dev.yml logs -f estimation-service",
-    "logs:simulation": "docker-compose -f infra/docker-compose.dev.yml logs -f simulation-service",
-    "logs:frontend": "docker-compose -f infra/docker-compose.dev.yml logs -f frontend",
-    "logs:postgres": "docker-compose -f infra/docker-compose.dev.yml logs -f postgres",
-    "logs:redis": "docker-compose -f infra/docker-compose.dev.yml logs -f redis",
-    "logs:kafka": "docker-compose -f infra/docker-compose.dev.yml logs -f kafka",
-    "logs:clickhouse": "docker-compose -f infra/docker-compose.dev.yml logs -f clickhouse",
-    "prepare": "husky install"
-  },
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
-  "devDependencies": {
-    "@commitlint/cli": "^18.4.3",
-    "@commitlint/config-conventional": "^18.4.3",
-    "husky": "^8.0.3",
-    "lint-staged": "^15.2.0",
-    "prettier": "^3.1.0",
-    "turbo": "^1.10.16",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
-  },
-  "dependencies": {
-    "class-transformer": "^0.5.1",
-    "class-validator": "^0.15.1"
-  }
+    "name":  "estimation-platform",
+    "version":  "1.0.2",
+    "description":  "AI-powered estimation platform with microservices architecture",
+    "private":  true,
+    "scripts":  {
+                    "build":  "turbo run build",
+                    "test":  "turbo run test",
+                    "lint":  "turbo run lint",
+                    "format":  "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+                    "type-check":  "turbo run type-check",
+                    "db:setup":  "cd packages/database \u0026\u0026 npx prisma migrate dev --name init",
+                    "db:seed":  "cd packages/database \u0026\u0026 npx ts-node seed.ts",
+                    "db:reset":  "cd packages/database \u0026\u0026 npx prisma migrate reset --force",
+                    "db:push":  "cd packages/database \u0026\u0026 npx prisma db push",
+                    "db:studio":  "cd packages/database \u0026\u0026 npx prisma studio",
+                    "docker:up":  "docker-compose -f infra/docker-compose.dev.yml up -d",
+                    "docker:down":  "docker-compose -f infra/docker-compose.dev.yml down",
+                    "docker:logs":  "docker-compose -f infra/docker-compose.dev.yml logs -f",
+                    "docker:restart":  "docker-compose -f infra/docker-compose.dev.yml restart",
+                    "docker:clean":  "docker-compose -f infra/docker-compose.dev.yml down -v",
+                    "start":  "npm run docker:up \u0026\u0026 npm run db:setup \u0026\u0026 npm run db:seed \u0026\u0026 npm run dev",
+                    "stop":  "npm run docker:down",
+                    "health":  "docker-compose -f infra/docker-compose.dev.yml ps",
+                    "logs:auth":  "docker-compose -f infra/docker-compose.dev.yml logs -f auth-service",
+                    "logs:project":  "docker-compose -f infra/docker-compose.dev.yml logs -f project-service",
+                    "logs:developer":  "docker-compose -f infra/docker-compose.dev.yml logs -f developer-service",
+                    "logs:risk":  "docker-compose -f infra/docker-compose.dev.yml logs -f risk-service",
+                    "logs:analytics":  "docker-compose -f infra/docker-compose.dev.yml logs -f analytics-service",
+                    "logs:notification":  "docker-compose -f infra/docker-compose.dev.yml logs -f notification-service",
+                    "logs:integration":  "docker-compose -f infra/docker-compose.dev.yml logs -f integration-service",
+                    "logs:collaboration":  "docker-compose -f infra/docker-compose.dev.yml logs -f collaboration-service",
+                    "logs:estimation":  "docker-compose -f infra/docker-compose.dev.yml logs -f estimation-service",
+                    "logs:simulation":  "docker-compose -f infra/docker-compose.dev.yml logs -f simulation-service",
+                    "logs:frontend":  "docker-compose -f infra/docker-compose.dev.yml logs -f frontend",
+                    "logs:postgres":  "docker-compose -f infra/docker-compose.dev.yml logs -f postgres",
+                    "logs:redis":  "docker-compose -f infra/docker-compose.dev.yml logs -f redis",
+                    "logs:kafka":  "docker-compose -f infra/docker-compose.dev.yml logs -f kafka",
+                    "logs:clickhouse":  "docker-compose -f infra/docker-compose.dev.yml logs -f clickhouse",
+                    "prepare":  "husky install",
+                    "kill:ports":  "npx kill-port 3001 3002 3003 3004 3005 3006 3007 3008 4000 8000 8001",
+                    "dev":  "npm run kill:ports \u0026\u0026 turbo run dev --parallel"
+                },
+    "workspaces":  [
+                       "apps/*",
+                       "packages/*"
+                   ],
+    "devDependencies":  {
+                            "@commitlint/cli":  "^18.4.3",
+                            "@commitlint/config-conventional":  "^18.4.3",
+                            "husky":  "^8.0.3",
+                            "lint-staged":  "^15.2.0",
+                            "prettier":  "^3.1.0",
+                            "turbo":  "^1.10.16",
+                            "typescript":  "^5.3.3"
+                        },
+    "engines":  {
+                    "node":  "\u003e=18.0.0",
+                    "npm":  "\u003e=9.0.0"
+                },
+    "dependencies":  {
+                         "class-transformer":  "^0.5.1",
+                         "class-validator":  "^0.15.1"
+                     }
 }
